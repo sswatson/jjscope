@@ -44,7 +44,6 @@ use crate::commander::Commander;
 use crate::env::Env;
 use crate::env::set_env;
 use crate::ui::ComponentAction;
-use crate::ui::ui;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -166,7 +165,7 @@ fn run_app(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     loop {
         app.update()?;
         terminal.draw(|f| {
-            let _ = ui(f, app);
+            let _ = app.draw(f, f.area());
         })?;
 
         let should_stop = input_to_app(app)?;
