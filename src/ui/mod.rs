@@ -4,7 +4,6 @@ pub mod dialog;
 pub mod files_tab;
 pub mod loader_popup;
 pub mod log_tab;
-pub mod message_popup;
 pub mod panel;
 pub mod rebase_popup;
 pub mod styles;

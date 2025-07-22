@@ -34,7 +34,7 @@ use crate::ui::commit_show_cache::CommitShowValue;
 use crate::ui::dialog::BookmarkSetPopup;
 use crate::ui::dialog::HelpPopup;
 use crate::ui::loader_popup::LoaderPopup;
-use crate::ui::message_popup::MessagePopup;
+use crate::ui::dialog::MessagePopup;
 use crate::ui::panel::DetailsPanel;
 use crate::ui::panel::LargeStringContent;
 use crate::ui::panel::LogPanel;

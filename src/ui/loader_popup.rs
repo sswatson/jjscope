@@ -24,7 +24,7 @@ use crate::ComponentInputResult;
 use crate::commander::CommandError;
 use crate::ui::Component;
 use crate::ui::ComponentAction;
-use crate::ui::message_popup::MessagePopup;
+use crate::ui::dialog::MessagePopup;
 use crate::ui::utils::centered_rect_fixed;
 
 type OperationResult = Result<String, CommandError>;
