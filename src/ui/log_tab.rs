@@ -33,7 +33,7 @@ use crate::ui::commit_show_cache::CommitShowKey;
 use crate::ui::commit_show_cache::CommitShowValue;
 use crate::ui::dialog::BookmarkSetPopup;
 use crate::ui::dialog::HelpPopup;
-use crate::ui::loader_popup::LoaderPopup;
+use crate::ui::dialog::LoaderPopup;
 use crate::ui::dialog::MessagePopup;
 use crate::ui::dialog::RebasePopup;
 use crate::ui::panel::DetailsPanel;

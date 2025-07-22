@@ -2,7 +2,6 @@ pub mod bookmarks_tab;
 pub mod commit_show_cache;
 pub mod dialog;
 pub mod files_tab;
-pub mod loader_popup;
 pub mod log_tab;
 pub mod panel;
 pub mod styles;
