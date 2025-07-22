@@ -1,5 +1,4 @@
 pub mod bookmarks_tab;
-pub mod command_popup;
 pub mod commit_show_cache;
 pub mod dialog;
 pub mod files_tab;

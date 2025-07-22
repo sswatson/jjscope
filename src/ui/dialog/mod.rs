@@ -8,5 +8,7 @@ until it is closed.
 */
 
 mod bookmark_set;
+mod command;
 
 pub use bookmark_set::BookmarkSetPopup;
+pub use command::CommandPopup;
