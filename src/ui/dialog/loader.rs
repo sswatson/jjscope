@@ -20,10 +20,10 @@ use ratatui::widgets::Clear;
 use throbber_widgets_tui::Throbber;
 use throbber_widgets_tui::ThrobberState;
 
-use crate::ComponentInputResult;
 use crate::commander::CommandError;
 use crate::ui::Component;
 use crate::ui::ComponentAction;
+use crate::ui::ComponentInputResult;
 use crate::ui::dialog::MessagePopup;
 use crate::ui::utils::centered_rect_fixed;
 

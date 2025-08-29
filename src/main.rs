@@ -38,12 +38,10 @@ mod commander;
 mod env;
 mod keybinds;
 mod ui;
-
 use crate::app::App;
 use crate::commander::Commander;
 use crate::env::Env;
 use crate::env::set_env;
-use crate::ui::ComponentAction;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -254,20 +252,4 @@ fn install_panic_hook() {
         }
         original_hook(info);
     }));
-}
-
-enum ComponentInputResult {
-    Handled,
-    HandledAction(ComponentAction),
-    NotHandled,
-}
-
-impl ComponentInputResult {
-    pub fn is_handled(&self) -> bool {
-        match self {
-            ComponentInputResult::Handled => true,
-            ComponentInputResult::HandledAction(_) => true,
-            ComponentInputResult::NotHandled => false,
-        }
-    }
 }

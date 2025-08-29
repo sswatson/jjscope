@@ -18,11 +18,11 @@ use ratatui::widgets::*;
 use tracing::info;
 use tracing::instrument;
 
-use crate::ComponentInputResult;
 use crate::commander::new_commander;
 use crate::env::get_env;
 use crate::ui::Component;
 use crate::ui::ComponentAction;
+use crate::ui::ComponentInputResult;
 use crate::ui::bookmarks_tab::BookmarksTab;
 use crate::ui::dialog::CommandPopup;
 use crate::ui::files_tab::FilesTab;

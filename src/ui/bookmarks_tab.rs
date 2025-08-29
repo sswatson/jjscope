@@ -16,7 +16,6 @@ use tui_confirm_dialog::ConfirmDialog;
 use tui_confirm_dialog::ConfirmDialogState;
 use tui_confirm_dialog::Listener;
 
-use crate::ComponentInputResult;
 use crate::commander::CommandError;
 use crate::commander::bookmarks::BookmarkLine;
 use crate::commander::ids::ChangeId;
@@ -26,6 +25,7 @@ use crate::env::JjConfig;
 use crate::env::get_env;
 use crate::ui::Component;
 use crate::ui::ComponentAction;
+use crate::ui::ComponentInputResult;
 use crate::ui::dialog::HelpPopup;
 use crate::ui::dialog::MessagePopup;
 use crate::ui::panel::DetailsPanel;

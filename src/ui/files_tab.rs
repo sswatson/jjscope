@@ -9,7 +9,6 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 use tracing::instrument;
 
-use crate::ComponentInputResult;
 use crate::commander::CommandError;
 use crate::commander::files::Conflict;
 use crate::commander::files::File;
@@ -20,6 +19,7 @@ use crate::env::JjConfig;
 use crate::env::get_env;
 use crate::ui::Component;
 use crate::ui::ComponentAction;
+use crate::ui::ComponentInputResult;
 use crate::ui::dialog::HelpPopup;
 use crate::ui::dialog::MessagePopup;
 use crate::ui::panel::DetailsPanel;

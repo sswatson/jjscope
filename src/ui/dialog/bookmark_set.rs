@@ -23,7 +23,6 @@ use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
 use ratatui_textarea::TextArea;
 
-use crate::ComponentInputResult;
 use crate::commander::bookmarks::Bookmark;
 use crate::commander::ids::ChangeId;
 use crate::commander::ids::CommitId;
@@ -31,6 +30,7 @@ use crate::commander::new_commander;
 use crate::env::JjConfig;
 use crate::ui::Component;
 use crate::ui::ComponentAction;
+use crate::ui::ComponentInputResult;
 use crate::ui::styles::create_popup_block;
 use crate::ui::utils::centered_rect;
 use crate::ui::utils::centered_rect_line_height;
@@ -243,7 +243,7 @@ impl Component for BookmarkSetPopup<'_> {
     }
 
     /// Handle input. Returns bool of if to close
-    fn input(&mut self, event: Event) -> anyhow::Result<crate::ComponentInputResult> {
+    fn input(&mut self, event: Event) -> anyhow::Result<ComponentInputResult> {
         if let Some(creating) = self.creating.as_mut() {
             if let Event::Key(key) = event {
                 match key.code {
