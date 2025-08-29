@@ -13,12 +13,13 @@ use ratatui::layout::Rect;
 
 use crate::commander::log::Head;
 
-pub enum ComponentAction {
+/// Action commmands from component to application
+pub enum AppAction {
     ViewFiles(Head),
     ViewLog(Head),
     ChangeHead(Head),
     SetPopup(Option<Box<dyn Component>>),
-    Multiple(Vec<ComponentAction>),
+    Multiple(Vec<AppAction>),
     RefreshTab(),
 }
 
@@ -27,8 +28,8 @@ pub enum ComponentAction {
 pub enum ComponentInputResult {
     /// The app should stop processing the event
     Handled,
-    /// The app should perform the specified ComponentAction.
-    HandledAction(ComponentAction),
+    /// The app should perform the specified AppAction.
+    HandledAction(AppAction),
     /// The app should ask the next component in z-order to handle the event
     NotHandled,
 }
@@ -48,7 +49,7 @@ pub trait Component {
         Ok(())
     }
 
-    fn update(&mut self) -> Result<Option<ComponentAction>> {
+    fn update(&mut self) -> Result<Option<AppAction>> {
         Ok(None)
     }
 

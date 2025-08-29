@@ -20,8 +20,8 @@ use tracing::instrument;
 
 use crate::commander::new_commander;
 use crate::env::get_env;
+use crate::ui::AppAction;
 use crate::ui::Component;
-use crate::ui::ComponentAction;
 use crate::ui::ComponentInputResult;
 use crate::ui::bookmarks_tab::BookmarksTab;
 use crate::ui::dialog::CommandPopup;
@@ -79,6 +79,7 @@ impl<'a> App<'a> {
     pub fn get_or_init_current_tab(&mut self) -> Result<&mut dyn Component> {
         self.get_or_init_tab(self.current_tab)
     }
+
     pub fn get_current_tab(&mut self) -> Option<&mut dyn Component> {
         self.get_tab(self.current_tab)
     }
@@ -157,28 +158,30 @@ impl<'a> App<'a> {
         }
     }
 
-    pub fn handle_action(&mut self, component_action: ComponentAction) -> Result<()> {
-        match component_action {
-            ComponentAction::ViewFiles(head) => {
+    /// When a component wants the app to do something,
+    /// it sends a AppAction which the App handles.
+    pub fn handle_action(&mut self, app_action: AppAction) -> Result<()> {
+        match app_action {
+            AppAction::ViewFiles(head) => {
                 self.set_tab(Tab::Files)?;
                 self.get_files_tab()?.set_head(&head)?;
             }
-            ComponentAction::ViewLog(head) => {
+            AppAction::ViewLog(head) => {
                 self.get_log_tab()?.set_head(head);
                 self.set_tab(Tab::Log)?;
             }
-            ComponentAction::ChangeHead(head) => {
+            AppAction::ChangeHead(head) => {
                 self.get_files_tab()?.set_head(&head)?;
             }
-            ComponentAction::SetPopup(popup) => {
+            AppAction::SetPopup(popup) => {
                 self.popup = popup;
             }
-            ComponentAction::Multiple(component_actions) => {
-                for component_action in component_actions.into_iter() {
-                    self.handle_action(component_action)?;
+            AppAction::Multiple(app_actions) => {
+                for app_action in app_actions.into_iter() {
+                    self.handle_action(app_action)?;
                 }
             }
-            ComponentAction::RefreshTab() => {
+            AppAction::RefreshTab() => {
                 self.set_tab(self.current_tab)?;
                 if self.current_tab == Tab::Log {
                     let head = new_commander().get_current_head()?.clone();
@@ -281,8 +284,8 @@ impl<'a> App<'a> {
     pub fn input(&mut self, event: Event) -> Result<bool> {
         if let Some(popup) = self.popup.as_mut() {
             match popup.input(event.clone())? {
-                ComponentInputResult::HandledAction(component_action) => {
-                    self.handle_action(component_action)?
+                ComponentInputResult::HandledAction(app_action) => {
+                    self.handle_action(app_action)?
                 }
                 ComponentInputResult::Handled => {}
                 ComponentInputResult::NotHandled => {
@@ -308,8 +311,8 @@ impl<'a> App<'a> {
             self.get_or_init_current_tab()?.focus()?;
         } else {
             match self.get_or_init_current_tab()?.input(event.clone())? {
-                ComponentInputResult::HandledAction(component_action) => {
-                    self.handle_action(component_action)?
+                ComponentInputResult::HandledAction(app_action) => {
+                    self.handle_action(app_action)?
                 }
                 ComponentInputResult::Handled => {}
                 ComponentInputResult::NotHandled => {
