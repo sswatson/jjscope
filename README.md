@@ -164,6 +164,7 @@ See all key mappings for the current tab with `?`.
 
 ### Bookmarks tab
 
+- Filter bookmarks by name with `/`
 - Show bookmarks with all remotes with `a` (`jj bookmark list --all`)
 - Create a bookmark with `c` (`jj bookmark create`)
 - Rename a bookmark with `r` (`jj bookmark rename`)

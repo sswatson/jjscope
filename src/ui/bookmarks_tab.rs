@@ -66,6 +66,8 @@ pub struct BookmarksTab<'a> {
     bookmarks_height: u16,
 
     show_all: bool,
+    filter_query: String,
+    filter: Option<TextArea<'a>>,
 
     bookmark: Option<BookmarkLine>,
 
@@ -91,32 +93,56 @@ pub struct BookmarksTab<'a> {
     pane_divider: PaneDivider,
 }
 
+fn bookmark_lines_match(current_bookmark: &BookmarkLine, bookmark: &BookmarkLine) -> bool {
+    match (current_bookmark, bookmark) {
+        (
+            BookmarkLine::Parsed {
+                bookmark: current_bookmark,
+                ..
+            },
+            BookmarkLine::Parsed { bookmark, .. },
+        ) => current_bookmark.name == bookmark.name && current_bookmark.remote == bookmark.remote,
+        (BookmarkLine::Unparsable(current_bookmark), BookmarkLine::Unparsable(bookmark)) => {
+            current_bookmark == bookmark
+        }
+        _ => false,
+    }
+}
+
+fn bookmark_matches_filter(bookmark: &BookmarkLine, filter_query: &str) -> bool {
+    if filter_query.is_empty() {
+        return true;
+    }
+
+    let filter_query = filter_query.to_lowercase();
+    match bookmark {
+        BookmarkLine::Parsed { bookmark, .. } => {
+            bookmark.to_string().to_lowercase().contains(&filter_query)
+        }
+        BookmarkLine::Unparsable(text) => text.to_lowercase().contains(&filter_query),
+    }
+}
+
+fn get_current_bookmark_index_in_list(
+    current_bookmark: Option<&BookmarkLine>,
+    bookmarks: &[&BookmarkLine],
+) -> Option<usize> {
+    current_bookmark.and_then(|current_bookmark| {
+        bookmarks
+            .iter()
+            .position(|bookmark| bookmark_lines_match(current_bookmark, bookmark))
+    })
+}
+
 fn get_current_bookmark_index(
     current_bookmark: Option<&BookmarkLine>,
     bookmarks_output: &Result<Vec<BookmarkLine>, CommandError>,
 ) -> Option<usize> {
     match bookmarks_output {
-        Ok(bookmarks_output) => current_bookmark.as_ref().and_then(|current_bookmark| {
-            bookmarks_output
-                .iter()
-                .position(|bookmark| match (current_bookmark, bookmark) {
-                    (
-                        BookmarkLine::Parsed {
-                            bookmark: current_bookmark,
-                            ..
-                        },
-                        BookmarkLine::Parsed { bookmark, .. },
-                    ) => {
-                        current_bookmark.name == bookmark.name
-                            && current_bookmark.remote == bookmark.remote
-                    }
-                    (
-                        BookmarkLine::Unparsable(current_bookmark),
-                        BookmarkLine::Unparsable(bookmark),
-                    ) => current_bookmark == bookmark,
-                    _ => false,
-                })
-        }),
+        Ok(bookmarks_output) => {
+            let bookmarks: Vec<&BookmarkLine> = bookmarks_output.iter().collect();
+            get_current_bookmark_index_in_list(current_bookmark, &bookmarks)
+        }
         Err(_) => None,
     }
 }
@@ -161,6 +187,8 @@ impl BookmarksTab<'_> {
             bookmarks_height: 0,
 
             show_all,
+            filter_query: String::new(),
+            filter: None,
 
             bookmark_panel: DetailsPanel::new(),
             bookmark_output,
@@ -185,12 +213,19 @@ impl BookmarksTab<'_> {
         })
     }
 
-    pub fn get_current_bookmark_index(&self) -> Option<usize> {
-        get_current_bookmark_index(self.bookmark.as_ref(), &self.bookmarks_output)
-    }
-
     pub fn refresh_bookmarks(&mut self) {
         self.bookmarks_output = new_commander().get_bookmarks(self.show_all);
+    }
+
+    fn filtered_bookmarks(&self) -> Vec<BookmarkLine> {
+        match self.bookmarks_output.as_ref() {
+            Ok(bookmarks_output) => bookmarks_output
+                .iter()
+                .filter(|bookmark| bookmark_matches_filter(bookmark, &self.filter_query))
+                .cloned()
+                .collect(),
+            Err(_) => vec![],
+        }
     }
 
     pub fn refresh_bookmark(&mut self) {
@@ -209,10 +244,41 @@ impl BookmarksTab<'_> {
         self.bookmark_panel.scroll_to(0);
     }
 
+    fn sync_selected_bookmark(&mut self) {
+        let filtered_bookmarks = self.filtered_bookmarks();
+        let filtered_bookmark_refs: Vec<&BookmarkLine> = filtered_bookmarks.iter().collect();
+        self.bookmark = match filtered_bookmarks.first() {
+            None => None,
+            Some(_)
+                if get_current_bookmark_index_in_list(
+                    self.bookmark.as_ref(),
+                    &filtered_bookmark_refs,
+                )
+                .is_some() =>
+            {
+                self.bookmark.clone()
+            }
+            Some(first_bookmark) => Some(first_bookmark.clone()),
+        };
+
+        self.refresh_bookmark();
+    }
+
+    fn open_filter(&mut self) {
+        let mut textarea = TextArea::new(vec![self.filter_query.clone()]);
+        textarea.move_cursor(CursorMove::End);
+        self.filter = Some(textarea);
+    }
+
     fn scroll_bookmarks(&mut self, scroll: isize) {
-        let bookmarks = Vec::new();
-        let bookmarks = self.bookmarks_output.as_ref().unwrap_or(&bookmarks);
-        let current_bookmark_index = self.get_current_bookmark_index();
+        let bookmarks = self.filtered_bookmarks();
+        if bookmarks.is_empty() {
+            return;
+        }
+
+        let bookmark_refs: Vec<&BookmarkLine> = bookmarks.iter().collect();
+        let current_bookmark_index =
+            get_current_bookmark_index_in_list(self.bookmark.as_ref(), &bookmark_refs);
         let next_bookmark = match current_bookmark_index {
             Some(current_bookmark_index) => bookmarks.get(
                 current_bookmark_index
@@ -221,7 +287,7 @@ impl BookmarksTab<'_> {
             ),
             None => bookmarks.first(),
         }
-        .map(|x| x.to_owned());
+        .cloned();
 
         if let Some(next_bookmark) = next_bookmark {
             self.bookmark = Some(next_bookmark);
@@ -233,7 +299,7 @@ impl BookmarksTab<'_> {
 impl Component for BookmarksTab<'_> {
     fn focus(&mut self) -> Result<()> {
         self.refresh_bookmarks();
-        self.refresh_bookmark();
+        self.sync_selected_bookmark();
         Ok(())
     }
 
@@ -248,12 +314,7 @@ impl Component for BookmarksTab<'_> {
                         match new_commander().delete_bookmark(&delete.name) {
                             Ok(_) => {
                                 self.refresh_bookmarks();
-                                let bookmarks = Vec::new();
-                                let bookmarks =
-                                    self.bookmarks_output.as_ref().unwrap_or(&bookmarks);
-                                self.bookmark =
-                                    bookmarks.first().map(|bookmark| bookmark.to_owned());
-                                self.refresh_bookmark();
+                                self.sync_selected_bookmark();
                             }
                             Err(err) => {
                                 return Ok(Some(AppAction::SetPopup(Some(Box::new(
@@ -268,12 +329,7 @@ impl Component for BookmarksTab<'_> {
                         match new_commander().forget_bookmark(&forget.name) {
                             Ok(_) => {
                                 self.refresh_bookmarks();
-                                let bookmarks = Vec::new();
-                                let bookmarks =
-                                    self.bookmarks_output.as_ref().unwrap_or(&bookmarks);
-                                self.bookmark =
-                                    bookmarks.first().map(|bookmark| bookmark.to_owned());
-                                self.refresh_bookmark();
+                                self.sync_selected_bookmark();
                             }
                             Err(err) => {
                                 return Ok(Some(AppAction::SetPopup(Some(Box::new(
@@ -316,10 +372,42 @@ impl Component for BookmarksTab<'_> {
 
         // Draw bookmarks
         {
-            let current_bookmark_index = self.get_current_bookmark_index();
+            let filtered_bookmarks = self.filtered_bookmarks();
+            let filtered_bookmark_refs: Vec<&BookmarkLine> = filtered_bookmarks.iter().collect();
+            let current_bookmark_index =
+                get_current_bookmark_index_in_list(self.bookmark.as_ref(), &filtered_bookmark_refs);
+            let show_filter = self.filter.is_some() || !self.filter_query.is_empty();
+            let bookmark_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(if show_filter { 3 } else { 0 }),
+                    Constraint::Min(0),
+                ])
+                .split(chunks[0]);
+
+            if show_filter {
+                let filter_block = Block::bordered()
+                    .title(Span::styled(
+                        " Filter bookmarks ",
+                        Style::new().bold().cyan(),
+                    ))
+                    .border_type(BorderType::Rounded)
+                    .border_style(if self.filter.is_some() {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    });
+                let filter_inner = filter_block.inner(bookmark_chunks[0]);
+                f.render_widget(filter_block, bookmark_chunks[0]);
+                if let Some(filter) = self.filter.as_ref() {
+                    f.render_widget(filter, filter_inner);
+                } else {
+                    f.render_widget(Paragraph::new(self.filter_query.as_str()), filter_inner);
+                }
+            }
 
             let bookmark_lines: Vec<Line> = match self.bookmarks_output.as_ref() {
-                Ok(bookmarks_output) => bookmarks_output
+                Ok(_) => filtered_bookmarks
                     .iter()
                     .enumerate()
                     .map(|(i, bookmark)| -> Result<Vec<Line>, ansi_to_tui::Error> {
@@ -376,19 +464,36 @@ impl Component for BookmarksTab<'_> {
             };
 
             let lines = if bookmark_lines.is_empty() {
-                vec![Line::from(" No bookmarks").fg(Color::DarkGray).italic()]
+                vec![
+                    Line::from(if self.filter_query.is_empty() {
+                        " No bookmarks"
+                    } else {
+                        " No bookmarks matching filter"
+                    })
+                    .fg(Color::DarkGray)
+                    .italic(),
+                ]
             } else {
                 bookmark_lines
             };
 
+            let bookmarks_title = if self.filter_query.is_empty() {
+                " Bookmarks ".to_owned()
+            } else {
+                format!(" Bookmarks [{}] ", self.filter_query)
+            };
             let bookmarks_block = Block::bordered()
-                .title(" Bookmarks ")
+                .title(bookmarks_title)
                 .border_type(BorderType::Rounded);
-            self.bookmarks_height = bookmarks_block.inner(chunks[0]).height;
-            let bookmark_count = lines.len();
+            self.bookmarks_height = bookmarks_block.inner(bookmark_chunks[1]).height;
+            let bookmark_count = filtered_bookmarks.len();
             let bookmarks = List::new(lines).block(bookmarks_block).scroll_padding(3);
             *self.bookmarks_list_state.selected_mut() = current_bookmark_index;
-            f.render_stateful_widget(bookmarks, chunks[0], &mut self.bookmarks_list_state);
+            f.render_stateful_widget(
+                bookmarks,
+                bookmark_chunks[1],
+                &mut self.bookmarks_list_state,
+            );
 
             // Draw scrollbar on left panel
             if bookmark_count > self.bookmarks_height.into() {
@@ -400,7 +505,7 @@ impl Component for BookmarksTab<'_> {
 
                 f.render_stateful_widget(
                     scrollbar,
-                    chunks[0].inner(Margin {
+                    bookmark_chunks[1].inner(Margin {
                         vertical: 1,
                         horizontal: 0,
                     }),
@@ -639,7 +744,7 @@ impl Component for BookmarksTab<'_> {
                             self.bookmark = Some(bookmark.clone());
                         }
 
-                        self.refresh_bookmark();
+                        self.sync_selected_bookmark();
 
                         return Ok(ComponentInputResult::Handled);
                     }
@@ -695,7 +800,7 @@ impl Component for BookmarksTab<'_> {
                             self.bookmark = Some(bookmark.clone());
                         }
 
-                        self.refresh_bookmark();
+                        self.sync_selected_bookmark();
 
                         return Ok(ComponentInputResult::Handled);
                     }
@@ -740,6 +845,41 @@ impl Component for BookmarksTab<'_> {
             return Ok(ComponentInputResult::Handled);
         }
 
+        if let Some(filter) = self.filter.as_mut() {
+            if let Event::Key(key) = event {
+                if key.kind != KeyEventKind::Press {
+                    return Ok(ComponentInputResult::Handled);
+                }
+
+                match key.code {
+                    KeyCode::Up => {
+                        self.scroll_bookmarks(-1);
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    KeyCode::Down => {
+                        self.scroll_bookmarks(1);
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    KeyCode::Enter => {
+                        self.filter = None;
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    KeyCode::Esc => {
+                        self.filter_query.clear();
+                        self.filter = None;
+                        self.sync_selected_bookmark();
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    _ => {}
+                }
+            }
+
+            filter.input(event);
+            self.filter_query = filter.lines().join("");
+            self.sync_selected_bookmark();
+            return Ok(ComponentInputResult::Handled);
+        }
+
         if let Event::Key(key) = event {
             if key.kind != KeyEventKind::Press {
                 return Ok(ComponentInputResult::Handled);
@@ -773,11 +913,16 @@ impl Component for BookmarksTab<'_> {
                 }
                 KeyCode::Char('R') | KeyCode::F(5) => {
                     self.refresh_bookmarks();
-                    self.refresh_bookmark();
+                    self.sync_selected_bookmark();
                 }
                 KeyCode::Char('a') => {
                     self.show_all = !self.show_all;
                     self.refresh_bookmarks();
+                    self.sync_selected_bookmark();
+                }
+                KeyCode::Char('/') => {
+                    self.open_filter();
+                    return Ok(ComponentInputResult::Handled);
                 }
                 KeyCode::Char('c') => {
                     let textarea = TextArea::default();
@@ -847,7 +992,7 @@ impl Component for BookmarksTab<'_> {
                     {
                         new_commander().track_bookmark(bookmark)?;
                         self.refresh_bookmarks();
-                        self.refresh_bookmark();
+                        self.sync_selected_bookmark();
                     }
                 }
                 KeyCode::Char('T') => {
@@ -857,7 +1002,7 @@ impl Component for BookmarksTab<'_> {
                     {
                         new_commander().untrack_bookmark(bookmark)?;
                         self.refresh_bookmarks();
-                        self.refresh_bookmark();
+                        self.sync_selected_bookmark();
                     }
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -937,6 +1082,7 @@ impl Component for BookmarksTab<'_> {
                             vec![
                                 ("j/k".to_owned(), "scroll down/up".to_owned()),
                                 ("J/K".to_owned(), "scroll down by ½ page".to_owned()),
+                                ("/".to_owned(), "filter bookmarks".to_owned()),
                                 ("a".to_owned(), "show all remotes".to_owned()),
                                 ("c".to_owned(), "create bookmark".to_owned()),
                                 ("r".to_owned(), "rename bookmark".to_owned()),
@@ -980,5 +1126,42 @@ impl Component for BookmarksTab<'_> {
         }
 
         Ok(ComponentInputResult::Handled)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::commander::bookmarks::{Bookmark, BookmarkLine};
+
+    use super::bookmark_matches_filter;
+
+    #[test]
+    fn bookmark_filter_matches_name_case_insensitively() {
+        let bookmark = BookmarkLine::Parsed {
+            text: "feature/login".into(),
+            bookmark: Bookmark {
+                name: "feature/login".into(),
+                remote: None,
+                present: true,
+                timestamp: 0,
+            },
+        };
+
+        assert!(bookmark_matches_filter(&bookmark, "LOGIN"));
+    }
+
+    #[test]
+    fn bookmark_filter_matches_remote_name() {
+        let bookmark = BookmarkLine::Parsed {
+            text: "release@origin".into(),
+            bookmark: Bookmark {
+                name: "release".into(),
+                remote: Some("origin".into()),
+                present: true,
+                timestamp: 0,
+            },
+        };
+
+        assert!(bookmark_matches_filter(&bookmark, "origin"));
     }
 }
