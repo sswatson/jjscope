@@ -156,6 +156,10 @@ save = "ctrl+s"
 
 See more in [keybindings.md](docs/keybindings.md)
 
+## Related Projects
+
+ * [blazingjj.nvim](https://opencommit.eu/sejo/blazingjj.nvim) -- A Neovim plugin that provides a floating window interface for blazingjj
+
 ## Development
 
 ### Setup
