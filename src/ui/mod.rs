@@ -1,14 +1,9 @@
-pub mod bookmark_set_popup;
 pub mod bookmarks_tab;
-pub mod command_popup;
 pub mod commit_show_cache;
+pub mod dialog;
 pub mod files_tab;
-pub mod help_popup;
-pub mod loader_popup;
 pub mod log_tab;
-pub mod message_popup;
 pub mod panel;
-pub mod rebase_popup;
 pub mod styles;
 pub mod utils;
 

@@ -15,7 +15,7 @@ use crate::commander::new_commander;
 use crate::ui::Component;
 use crate::ui::ComponentAction;
 use crate::ui::bookmarks_tab::BookmarksTab;
-use crate::ui::command_popup::CommandPopup;
+use crate::ui::dialog::CommandPopup;
 use crate::ui::files_tab::FilesTab;
 use crate::ui::log_tab::LogTab;
 
