@@ -31,6 +31,7 @@ pub mod log;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io;
+use std::io::Write;
 use std::process::Command;
 use std::process::Stdio;
 use std::string::FromUtf8Error;
@@ -161,6 +162,7 @@ impl Commander {
             args: args.into_iter().map(|s| s.as_ref().to_owned()).collect(),
             color: false,
             quiet: true,
+            stdin: None,
             env_var,
         }
     }
@@ -217,6 +219,8 @@ pub struct JjCommand<'a> {
     color: bool,
     /// Whether to pass `--quiet`. On by default.
     quiet: bool,
+    /// Data to feed the command on standard input, if any.
+    stdin: Option<String>,
     /// Environment variables for this command.
     env_var: Vec<(String, String)>,
 }
@@ -235,6 +239,16 @@ impl JjCommand<'_> {
     /// messages) is included. Quiet is on by default.
     pub fn verbose(mut self) -> Self {
         self.quiet = false;
+        self
+    }
+
+    /// Feed `stdin` to the command on standard input.
+    ///
+    /// Useful for commands like `jj describe --stdin`, where passing the value
+    /// as an argument would be misinterpreted (e.g. a message starting with a
+    /// dash being parsed as a flag).
+    pub fn stdin(mut self, stdin: &str) -> Self {
+        self.stdin = Some(stdin.to_owned());
         self
     }
 
@@ -277,7 +291,29 @@ impl JjCommand<'_> {
         command.stdout(stdout);
         command.stderr(Stdio::piped());
 
-        let output = command.spawn()?.wait_with_output()?;
+        let output = match self.stdin {
+            Some(input) => {
+                command.stdin(Stdio::piped());
+                let mut child = command.spawn()?;
+                let mut stdin = child.stdin.take().expect("stdin was piped");
+                // Write on a separate thread while we drain the child's output,
+                // so neither side deadlocks on a full pipe buffer. Dropping the
+                // handle closes the pipe, signalling EOF to the child.
+                let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+                let output = child.wait_with_output()?;
+                // Ignore a broken pipe (child exited early); the status check
+                // below surfaces the real error.
+                writer
+                    .join()
+                    .expect("stdin writer thread panicked")
+                    .or_else(|err| match err.kind() {
+                        io::ErrorKind::BrokenPipe => Ok(()),
+                        _ => Err(err),
+                    })?;
+                output
+            }
+            None => command.spawn()?.wait_with_output()?,
+        };
 
         if !output.status.success() {
             // Return JjError if non-zero status code

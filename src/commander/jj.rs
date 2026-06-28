@@ -51,10 +51,14 @@ impl Commander {
             .context("Failed executing jj abandon")
     }
 
-    /// Describe change. Maps to `jj describe <revision> -m <message>`
+    /// Describe change. Maps to `jj describe <revision> --stdin`
+    ///
+    /// The message is passed on stdin rather than via `-m`, since jj would
+    /// otherwise mistake a message starting with a dash for a flag.
     #[instrument(level = "trace", skip(self))]
     pub fn run_describe(&self, revision: &str, message: &str) -> Result<()> {
-        self.jj(["describe", revision, "-m", message])
+        self.jj(["describe", revision, "--stdin"])
+            .stdin(message)
             .run_void()
             .context("Failed executing jj describe")
     }
@@ -267,6 +271,22 @@ mod tests {
 
         let head = test_repo.commander.get_current_head()?.commit_id;
         assert_eq!(test_repo.commander.get_commit_description(&head)?, "AAA");
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_describe_leading_dash() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        // A message starting with a dash must not be mistaken for a flag.
+        let head = test_repo.commander.get_current_head()?;
+        test_repo
+            .commander
+            .run_describe(head.commit_id.as_str(), "-AAA")?;
+
+        let head = test_repo.commander.get_current_head()?.commit_id;
+        assert_eq!(test_repo.commander.get_commit_description(&head)?, "-AAA");
 
         Ok(())
     }
