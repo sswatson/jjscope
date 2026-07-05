@@ -38,13 +38,10 @@ mod commander;
 mod env;
 mod keybinds;
 mod ui;
-
 use crate::app::App;
 use crate::commander::Commander;
 use crate::env::Env;
 use crate::env::set_env;
-use crate::ui::ComponentAction;
-use crate::ui::ui;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -166,7 +163,7 @@ fn run_app(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     loop {
         app.update()?;
         terminal.draw(|f| {
-            let _ = ui(f, app);
+            let _ = app.draw(f, f.area());
         })?;
 
         let should_stop = input_to_app(app)?;
@@ -255,20 +252,4 @@ fn install_panic_hook() {
         }
         original_hook(info);
     }));
-}
-
-enum ComponentInputResult {
-    Handled,
-    HandledAction(ComponentAction),
-    NotHandled,
-}
-
-impl ComponentInputResult {
-    pub fn is_handled(&self) -> bool {
-        match self {
-            ComponentInputResult::Handled => true,
-            ComponentInputResult::HandledAction(_) => true,
-            ComponentInputResult::NotHandled => false,
-        }
-    }
 }

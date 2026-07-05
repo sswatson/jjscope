@@ -22,8 +22,8 @@ use crate::env::JjConfig;
 use crate::env::get_env;
 use crate::keybinds::LogTabEvent;
 use crate::keybinds::LogTabKeybinds;
+use crate::ui::AppAction;
 use crate::ui::Component;
-use crate::ui::ComponentAction;
 use crate::ui::ComponentInputResult;
 
 /**
@@ -357,7 +357,7 @@ impl Component for LogPanel<'_> {
         Ok(())
     }
 
-    fn update(&mut self) -> Result<Option<ComponentAction>> {
+    fn update(&mut self) -> Result<Option<AppAction>> {
         Ok(None)
     }
 

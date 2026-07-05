@@ -18,10 +18,10 @@ use ratatui::widgets::Paragraph;
 use ratatui_textarea::TextArea;
 use shell_words::split;
 
-use crate::ComponentInputResult;
 use crate::commander::new_commander;
+use crate::ui::AppAction;
 use crate::ui::Component;
-use crate::ui::ComponentAction;
+use crate::ui::ComponentInputResult;
 use crate::ui::dialog::MessagePopup;
 use crate::ui::utils::centered_rect_line_height;
 
@@ -81,9 +81,9 @@ impl Component for CommandPopup<'_> {
                     let mut command_input = command_input.as_str();
 
                     if command_input.trim().is_empty() {
-                        return Ok(ComponentInputResult::HandledAction(
-                            ComponentAction::SetPopup(None),
-                        ));
+                        return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                            None,
+                        )));
                     }
 
                     if command_input == "jj" {
@@ -107,28 +107,25 @@ impl Component for CommandPopup<'_> {
                     };
 
                     if output_str.trim().is_empty() {
-                        return Ok(ComponentInputResult::HandledAction(
-                            ComponentAction::Multiple(vec![
-                                ComponentAction::SetPopup(None),
-                                ComponentAction::RefreshTab(),
-                            ]),
-                        ));
+                        return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+                            vec![AppAction::SetPopup(None), AppAction::RefreshTab()],
+                        )));
                     }
 
-                    return Ok(ComponentInputResult::HandledAction(
-                        ComponentAction::Multiple(vec![
-                            ComponentAction::SetPopup(Some(Box::new(
+                    return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+                        vec![
+                            AppAction::SetPopup(Some(Box::new(
                                 MessagePopup::new(format!("jj {command_input}"), output_str)
                                     .text_align(Alignment::Left),
                             ))),
-                            ComponentAction::RefreshTab(),
-                        ]),
-                    ));
+                            AppAction::RefreshTab(),
+                        ],
+                    )));
                 }
                 KeyCode::Esc => {
-                    return Ok(ComponentInputResult::HandledAction(
-                        ComponentAction::SetPopup(None),
-                    ));
+                    return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                        None,
+                    )));
                 }
                 _ => {}
             }

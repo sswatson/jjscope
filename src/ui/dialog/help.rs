@@ -11,8 +11,8 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 
-use crate::ComponentInputResult;
 use crate::ui::Component;
+use crate::ui::ComponentInputResult;
 use crate::ui::styles::create_popup_block;
 use crate::ui::utils::centered_rect;
 
@@ -86,7 +86,7 @@ impl Component for HelpPopup {
         Ok(())
     }
 
-    fn input(&mut self, event: Event) -> anyhow::Result<crate::ComponentInputResult> {
+    fn input(&mut self, event: Event) -> anyhow::Result<ComponentInputResult> {
         if let Event::Key(key) = event
             && key.kind == event::KeyEventKind::Press
         {

@@ -7,13 +7,22 @@ use ratatui::crossterm::event::Event;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::crossterm::event::KeyModifiers;
 use ratatui::crossterm::event::{self};
+use ratatui::layout::Constraint;
+use ratatui::layout::Direction;
+use ratatui::layout::Layout;
+use ratatui::prelude::*;
+use ratatui::style::Color;
+use ratatui::style::Style;
+use ratatui::symbols;
+use ratatui::widgets::*;
 use tracing::info;
 use tracing::instrument;
 
-use crate::ComponentInputResult;
 use crate::commander::new_commander;
+use crate::env::get_env;
+use crate::ui::AppAction;
 use crate::ui::Component;
-use crate::ui::ComponentAction;
+use crate::ui::ComponentInputResult;
 use crate::ui::bookmarks_tab::BookmarksTab;
 use crate::ui::dialog::CommandPopup;
 use crate::ui::files_tab::FilesTab;
@@ -70,6 +79,7 @@ impl<'a> App<'a> {
     pub fn get_or_init_current_tab(&mut self) -> Result<&mut dyn Component> {
         self.get_or_init_tab(self.current_tab)
     }
+
     pub fn get_current_tab(&mut self) -> Option<&mut dyn Component> {
         self.get_tab(self.current_tab)
     }
@@ -148,28 +158,30 @@ impl<'a> App<'a> {
         }
     }
 
-    pub fn handle_action(&mut self, component_action: ComponentAction) -> Result<()> {
-        match component_action {
-            ComponentAction::ViewFiles(head) => {
+    /// When a component wants the app to do something,
+    /// it sends a AppAction which the App handles.
+    pub fn handle_action(&mut self, app_action: AppAction) -> Result<()> {
+        match app_action {
+            AppAction::ViewFiles(head) => {
                 self.set_tab(Tab::Files)?;
                 self.get_files_tab()?.set_head(&head)?;
             }
-            ComponentAction::ViewLog(head) => {
+            AppAction::ViewLog(head) => {
                 self.get_log_tab()?.set_head(head);
                 self.set_tab(Tab::Log)?;
             }
-            ComponentAction::ChangeHead(head) => {
+            AppAction::ChangeHead(head) => {
                 self.get_files_tab()?.set_head(&head)?;
             }
-            ComponentAction::SetPopup(popup) => {
+            AppAction::SetPopup(popup) => {
                 self.popup = popup;
             }
-            ComponentAction::Multiple(component_actions) => {
-                for component_action in component_actions.into_iter() {
-                    self.handle_action(component_action)?;
+            AppAction::Multiple(app_actions) => {
+                for app_action in app_actions.into_iter() {
+                    self.handle_action(app_action)?;
                 }
             }
-            ComponentAction::RefreshTab() => {
+            AppAction::RefreshTab() => {
                 self.set_tab(self.current_tab)?;
                 if self.current_tab == Tab::Log {
                     let head = new_commander().get_current_head()?.clone();
@@ -196,12 +208,84 @@ impl<'a> App<'a> {
         Ok(())
     }
 
+    #[instrument(level = "trace", skip(self, f))]
+    pub fn draw(&mut self, f: &mut Frame<'_>, area: Rect) -> Result<()> {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(1)])
+            .split(area);
+
+        let header_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(chunks[0]);
+
+        {
+            let tabs = Tabs::new(
+                Tab::VALUES
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tab)| format!("[{}] {}", i + 1, tab)),
+            )
+            .block(
+                Block::bordered()
+                    .title(" Tabs ")
+                    .border_type(BorderType::Rounded),
+            )
+            .highlight_style(Style::default().bg(get_env().jj_config.highlight_color()))
+            .select(
+                Tab::VALUES
+                    .iter()
+                    .position(|tab| tab == &self.current_tab)
+                    .unwrap_or(0),
+            )
+            .divider(symbols::line::VERTICAL);
+
+            f.render_widget(tabs, header_chunks[0]);
+        }
+        {
+            let tabs = Paragraph::new("q: quit | ?: help | R: refresh | 1/2/3: change tab")
+                .fg(Color::DarkGray)
+                .block(
+                    Block::bordered()
+                        .title(" blazingjj ")
+                        .border_type(BorderType::Rounded)
+                        .fg(Color::default()),
+                );
+
+            f.render_widget(tabs, header_chunks[1]);
+        }
+
+        if let Some(current_tab) = self.get_current_tab() {
+            current_tab.draw(f, chunks[1])?;
+        }
+
+        if let Some(popup) = self.popup.as_mut() {
+            popup.draw(f, area)?;
+        }
+
+        {
+            let paragraph =
+                Paragraph::new(format!("{}ms", self.stats.start_time.elapsed().as_millis()))
+                    .alignment(Alignment::Right);
+            let position = Rect {
+                x: 0,
+                y: 1,
+                height: 1,
+                width: area.width - 1,
+            };
+            f.render_widget(paragraph, position);
+        }
+
+        Ok(())
+    }
+
     #[instrument(level = "trace", skip(self))]
     pub fn input(&mut self, event: Event) -> Result<bool> {
         if let Some(popup) = self.popup.as_mut() {
             match popup.input(event.clone())? {
-                ComponentInputResult::HandledAction(component_action) => {
-                    self.handle_action(component_action)?
+                ComponentInputResult::HandledAction(app_action) => {
+                    self.handle_action(app_action)?
                 }
                 ComponentInputResult::Handled => {}
                 ComponentInputResult::NotHandled => {
@@ -227,8 +311,8 @@ impl<'a> App<'a> {
             self.get_or_init_current_tab()?.focus()?;
         } else {
             match self.get_or_init_current_tab()?.input(event.clone())? {
-                ComponentInputResult::HandledAction(component_action) => {
-                    self.handle_action(component_action)?
+                ComponentInputResult::HandledAction(app_action) => {
+                    self.handle_action(app_action)?
                 }
                 ComponentInputResult::Handled => {}
                 ComponentInputResult::NotHandled => {

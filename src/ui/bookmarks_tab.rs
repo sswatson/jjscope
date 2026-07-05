@@ -16,7 +16,6 @@ use tui_confirm_dialog::ConfirmDialog;
 use tui_confirm_dialog::ConfirmDialogState;
 use tui_confirm_dialog::Listener;
 
-use crate::ComponentInputResult;
 use crate::commander::CommandError;
 use crate::commander::bookmarks::BookmarkLine;
 use crate::commander::ids::ChangeId;
@@ -24,8 +23,9 @@ use crate::commander::new_commander;
 use crate::env::DiffFormat;
 use crate::env::JjConfig;
 use crate::env::get_env;
+use crate::ui::AppAction;
 use crate::ui::Component;
-use crate::ui::ComponentAction;
+use crate::ui::ComponentInputResult;
 use crate::ui::dialog::HelpPopup;
 use crate::ui::dialog::MessagePopup;
 use crate::ui::panel::DetailsPanel;
@@ -241,7 +241,7 @@ impl Component for BookmarksTab<'_> {
         Ok(())
     }
 
-    fn update(&mut self) -> Result<Option<ComponentAction>> {
+    fn update(&mut self) -> Result<Option<AppAction>> {
         // Check for popup action
         if let Ok(res) = self.popup_rx.try_recv()
             && res.1.unwrap_or(false)
@@ -260,7 +260,7 @@ impl Component for BookmarksTab<'_> {
                                 self.refresh_bookmark();
                             }
                             Err(err) => {
-                                return Ok(Some(ComponentAction::SetPopup(Some(Box::new(
+                                return Ok(Some(AppAction::SetPopup(Some(Box::new(
                                     MessagePopup::new("Delete error", err.to_string()),
                                 )))));
                             }
@@ -280,7 +280,7 @@ impl Component for BookmarksTab<'_> {
                                 self.refresh_bookmark();
                             }
                             Err(err) => {
-                                return Ok(Some(ComponentAction::SetPopup(Some(Box::new(
+                                return Ok(Some(AppAction::SetPopup(Some(Box::new(
                                     MessagePopup::new("Forget error", err.to_string()),
                                 )))));
                             }
@@ -298,7 +298,7 @@ impl Component for BookmarksTab<'_> {
                             self.describe_textarea = Some(textarea);
                             return Ok(None);
                         } else {
-                            return Ok(Some(ComponentAction::ViewLog(head)));
+                            return Ok(Some(AppAction::ViewLog(head)));
                         }
                     }
                 }
@@ -307,7 +307,7 @@ impl Component for BookmarksTab<'_> {
                         new_commander()
                             .run_edit(&bookmark.to_string(), self.edit_ignore_immutable)?;
                         let head = new_commander().get_current_head()?;
-                        return Ok(Some(ComponentAction::ViewLog(head)));
+                        return Ok(Some(AppAction::ViewLog(head)));
                     }
                 }
                 _ => {}
@@ -734,9 +734,9 @@ impl Component for BookmarksTab<'_> {
                         )?;
                         self.describe_textarea = None;
                         self.describe_after_new_change = None;
-                        return Ok(ComponentInputResult::HandledAction(
-                            ComponentAction::ViewLog(new_commander().get_current_head()?),
-                        ));
+                        return Ok(ComponentInputResult::HandledAction(AppAction::ViewLog(
+                            new_commander().get_current_head()?,
+                        )));
                     }
                     KeyCode::Esc => {
                         self.describe_textarea = None;
@@ -899,7 +899,7 @@ impl Component for BookmarksTab<'_> {
                                 && !ignore_immutable
                             {
                                 return Ok(ComponentInputResult::HandledAction(
-                                    ComponentAction::SetPopup(Some(Box::new(MessagePopup::new(
+                                    AppAction::SetPopup(Some(Box::new(MessagePopup::new(
                                         "Edit",
                                         "The change cannot be edited because it is immutable.",
                                     )))),
@@ -927,14 +927,14 @@ impl Component for BookmarksTab<'_> {
                     if let Some(BookmarkLine::Parsed { bookmark, .. }) = self.bookmark.as_ref()
                         && bookmark.present
                     {
-                        return Ok(ComponentInputResult::HandledAction(
-                            ComponentAction::ViewLog(new_commander().get_bookmark_head(bookmark)?),
-                        ));
+                        return Ok(ComponentInputResult::HandledAction(AppAction::ViewLog(
+                            new_commander().get_bookmark_head(bookmark)?,
+                        )));
                     }
                 }
                 KeyCode::Char('?') => {
-                    return Ok(ComponentInputResult::HandledAction(
-                        ComponentAction::SetPopup(Some(Box::new(HelpPopup::new(
+                    return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                        Some(Box::new(HelpPopup::new(
                             vec![
                                 ("j/k".to_owned(), "scroll down/up".to_owned()),
                                 ("J/K".to_owned(), "scroll down by ½ page".to_owned()),
@@ -961,8 +961,8 @@ impl Component for BookmarksTab<'_> {
                                 ("w".to_owned(), "toggle diff format".to_owned()),
                                 ("W".to_owned(), "toggle wrapping".to_owned()),
                             ],
-                        )))),
-                    ));
+                        ))),
+                    )));
                 }
                 _ => return Ok(ComponentInputResult::NotHandled),
             };

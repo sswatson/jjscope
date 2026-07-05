@@ -20,10 +20,10 @@ use ratatui::widgets::Clear;
 use throbber_widgets_tui::Throbber;
 use throbber_widgets_tui::ThrobberState;
 
-use crate::ComponentInputResult;
 use crate::commander::CommandError;
+use crate::ui::AppAction;
 use crate::ui::Component;
-use crate::ui::ComponentAction;
+use crate::ui::ComponentInputResult;
 use crate::ui::dialog::MessagePopup;
 use crate::ui::utils::centered_rect_fixed;
 
@@ -67,7 +67,7 @@ impl Component for LoaderPopup {
     ///
     /// This updates the animation and also polls the running operation to see if the popup may be
     /// closed. In case of an error, that will be displayed in a new popup.
-    fn update(&mut self) -> Result<Option<ComponentAction>> {
+    fn update(&mut self) -> Result<Option<AppAction>> {
         if self.last_animation_update.elapsed() >= Duration::from_millis(100) {
             self.throbber_state.calc_next();
             self.last_animation_update = Instant::now();
@@ -78,18 +78,15 @@ impl Component for LoaderPopup {
         };
 
         let action = match result {
-            Ok(output) if !output.is_empty() => ComponentAction::Multiple(vec![
-                ComponentAction::SetPopup(Some(Box::new(MessagePopup::new(
+            Ok(output) if !output.is_empty() => AppAction::Multiple(vec![
+                AppAction::SetPopup(Some(Box::new(MessagePopup::new(
                     format!("{} message", self.operation_name),
                     output,
                 )))),
-                ComponentAction::RefreshTab(),
+                AppAction::RefreshTab(),
             ]),
-            Ok(_) => ComponentAction::Multiple(vec![
-                ComponentAction::SetPopup(None),
-                ComponentAction::RefreshTab(),
-            ]),
-            Err(err) => ComponentAction::SetPopup(Some(Box::new(MessagePopup::new(
+            Ok(_) => AppAction::Multiple(vec![AppAction::SetPopup(None), AppAction::RefreshTab()]),
+            Err(err) => AppAction::SetPopup(Some(Box::new(MessagePopup::new(
                 format!("{} error", self.operation_name),
                 err.to_string(),
             )))),

@@ -20,11 +20,11 @@ use ratatui::widgets::Scrollbar;
 use ratatui::widgets::ScrollbarOrientation;
 use ratatui::widgets::ScrollbarState;
 
-use crate::ComponentInputResult;
 use crate::env::get_env;
 use crate::keybinds::MessagePopupEvent;
 use crate::keybinds::MessagePopupKeybinds;
 use crate::ui::Component;
+use crate::ui::ComponentInputResult;
 use crate::ui::utils::LargeString;
 use crate::ui::utils::centered_rect;
 
