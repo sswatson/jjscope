@@ -202,6 +202,12 @@ impl Commander {
         self.jj(args).color().run()
     }
 
+    /// Git push a single named bookmark. Maps to `jj git push -b <name>`
+    #[instrument(level = "trace", skip(self))]
+    pub fn git_push_bookmark(&self, name: &str) -> Result<String, CommandError> {
+        self.jj(["git", "push", "-b", name]).color().run()
+    }
+
     /// Git fetch. Maps to `jj git fetch`
     #[instrument(level = "trace", skip(self))]
     pub fn git_fetch(&self, all_remotes: bool) -> Result<String, CommandError> {

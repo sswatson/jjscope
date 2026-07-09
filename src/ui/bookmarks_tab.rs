@@ -27,6 +27,7 @@ use crate::ui::AppAction;
 use crate::ui::Component;
 use crate::ui::ComponentInputResult;
 use crate::ui::dialog::HelpPopup;
+use crate::ui::dialog::LoaderPopup;
 use crate::ui::dialog::MessagePopup;
 use crate::ui::panel::DetailsPanel;
 use crate::ui::panel::TextContent;
@@ -891,6 +892,22 @@ impl Component for BookmarksTab<'_> {
                         self.describe_after_new = key.code == KeyCode::Char('N');
                     }
                 }
+                KeyCode::Char('p') => {
+                    if let Some(BookmarkLine::Parsed { bookmark, .. }) = self.bookmark.as_ref()
+                        && bookmark.present
+                        && bookmark.remote.is_none()
+                    {
+                        let name = bookmark.name.clone();
+
+                        let loader = LoaderPopup::new("Pushing".to_string(), move || {
+                            new_commander().git_push_bookmark(&name)
+                        });
+
+                        return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                            Some(Box::new(loader)),
+                        )));
+                    }
+                }
                 KeyCode::Char('e') | KeyCode::Char('E') => {
                     if let Some(BookmarkLine::Parsed { bookmark, .. }) = self.bookmark.as_ref() {
                         let ignore_immutable = key.code == KeyCode::Char('E');
@@ -947,6 +964,7 @@ impl Component for BookmarksTab<'_> {
                                 ("n".to_owned(), "new from bookmark".to_owned()),
                                 ("N".to_owned(), "new and describe".to_owned()),
                                 ("e".to_owned(), "edit bookmark".to_owned()),
+                                ("p".to_owned(), "push bookmark".to_owned()),
                             ],
                             vec![
                                 ("Ctrl+e/Ctrl+y".to_owned(), "scroll down/up".to_owned()),
