@@ -48,6 +48,7 @@ const NEW_POPUP_ID: u16 = 1;
 const EDIT_POPUP_ID: u16 = 2;
 const ABANDON_POPUP_ID: u16 = 3;
 const SQUASH_POPUP_ID: u16 = 4;
+const METAEDIT_UPDATE_CHANGE_ID_POPUP_ID: u16 = 5;
 
 /// Log tab. Shows `jj log` in main panel and shows selected change details of in details panel.
 pub struct LogTab<'a> {
@@ -88,6 +89,8 @@ pub struct LogTab<'a> {
     squash_target: Option<Head>,
 
     edit_ignore_immutable: bool,
+
+    metaedit_update_change_id_ignore_immutable: bool,
 
     config: JjConfig,
     pane_divider: PaneDivider,
@@ -177,6 +180,8 @@ impl<'a> LogTab<'a> {
             squash_target: None,
 
             edit_ignore_immutable: false,
+
+            metaedit_update_change_id_ignore_immutable: false,
 
             config,
             pane_divider,
@@ -524,6 +529,36 @@ impl<'a> LogTab<'a> {
                     .open();
                 self.edit_ignore_immutable = ignore_immutable;
             }
+            LogTabEvent::MetaeditUpdateChangeId { ignore_immutable } => {
+                if self.head.immutable && !ignore_immutable {
+                    return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                        Some(Box::new(MessagePopup::new(
+                            " Update change id ",
+                            "The change id cannot be updated because the change is immutable.",
+                        ))),
+                    )));
+                }
+
+                let mut lines = vec![
+                    Line::from("Are you sure you want to generate a new change id?"),
+                    Line::from(format!("Change: {}", self.head.change_id.as_str())),
+                    Line::from("This is useful to resolve divergence."),
+                ];
+                if ignore_immutable {
+                    lines.push(Line::from("This change is immutable."))
+                }
+                self.popup = ConfirmDialogState::new(
+                    METAEDIT_UPDATE_CHANGE_ID_POPUP_ID,
+                    Span::styled(" Update change id ", Style::new().bold().cyan()),
+                    Text::from(lines).fg(Color::default()),
+                );
+                self.popup
+                    .with_yes_button(ButtonLabel::YES.clone())
+                    .with_no_button(ButtonLabel::NO.clone())
+                    .with_listener(Some(self.popup_tx.clone()))
+                    .open();
+                self.metaedit_update_change_id_ignore_immutable = ignore_immutable;
+            }
             LogTabEvent::Abandon => {
                 return self.handle_abandon();
             }
@@ -670,6 +705,13 @@ impl Component for LogTab<'_> {
                         .run_edit(self.head.commit_id.as_str(), self.edit_ignore_immutable)?;
                     self.refresh_log_output();
                     return Ok(Some(AppAction::ChangeHead(self.head.clone())));
+                }
+                METAEDIT_UPDATE_CHANGE_ID_POPUP_ID => {
+                    new_commander().run_metaedit_update_change_id(
+                        self.head.commit_id.as_str(),
+                        self.metaedit_update_change_id_ignore_immutable,
+                    )?;
+                    return Ok(Some(AppAction::RefreshTab()));
                 }
                 ABANDON_POPUP_ID => {
                     return self.execute_abandon();

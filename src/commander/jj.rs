@@ -98,6 +98,23 @@ impl Commander {
             .context("Failed executing jj absorb")
     }
 
+    /// Generate a new change id for a revision. Maps to `jj metaedit --update-change-id <revision>`
+    #[instrument(level = "trace", skip(self))]
+    pub fn run_metaedit_update_change_id(
+        &self,
+        revision: &str,
+        ignore_immutable: bool,
+    ) -> Result<()> {
+        let mut args = vec!["metaedit", "--update-change-id", revision];
+        if ignore_immutable {
+            args.push("--ignore-immutable");
+        }
+
+        self.jj(args)
+            .run_void()
+            .context("Failed executing jj metaedit --update-change-id")
+    }
+
     /// Create bookmark. Maps to `jj bookmark create <name>`
     #[instrument(level = "trace", skip(self))]
     pub fn create_bookmark(&self, name: &str) -> Result<Bookmark, CommandError> {
