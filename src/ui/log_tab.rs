@@ -723,6 +723,26 @@ impl<'a> LogTab<'a> {
                     self.head.clone(),
                 )));
             }
+            LogTabEvent::Undo => {
+                new_commander().run_undo()?;
+                return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+                    vec![
+                        AppAction::RefreshTab(),
+                        AppAction::SetStatusMessage(
+                            "Undid last operation | shift+u: redo".to_owned(),
+                        ),
+                    ],
+                )));
+            }
+            LogTabEvent::Redo => {
+                new_commander().run_redo()?;
+                return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+                    vec![
+                        AppAction::RefreshTab(),
+                        AppAction::SetStatusMessage("Redid last undone operation".to_owned()),
+                    ],
+                )));
+            }
             LogTabEvent::Describe => {
                 if self.head.immutable {
                     return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(

@@ -59,6 +59,7 @@ pub struct App<'a> {
     pub files: Option<FilesTab>,
     pub bookmarks: Option<BookmarksTab<'a>>,
     pub popup: Option<Box<dyn Component>>,
+    pub status_message: Option<String>,
     pub stats: Stats,
 }
 
@@ -70,6 +71,7 @@ impl<'a> App<'a> {
             files: None,
             bookmarks: None,
             popup: None,
+            status_message: None,
             stats: Stats {
                 start_time: Instant::now(),
             },
@@ -176,6 +178,9 @@ impl<'a> App<'a> {
             AppAction::SetPopup(popup) => {
                 self.popup = popup;
             }
+            AppAction::SetStatusMessage(message) => {
+                self.status_message = Some(message);
+            }
             AppAction::Multiple(app_actions) => {
                 for app_action in app_actions.into_iter() {
                     self.handle_action(app_action)?;
@@ -244,16 +249,18 @@ impl<'a> App<'a> {
             f.render_widget(tabs, header_chunks[0]);
         }
         {
-            let tabs = Paragraph::new("q: quit | ?: help | R: refresh | 1/2/3: change tab")
-                .fg(Color::DarkGray)
-                .block(
-                    Block::bordered()
-                        .title(" jjscope ")
-                        .border_type(BorderType::Rounded)
-                        .fg(Color::default()),
-                );
+            let hint_text = self
+                .status_message
+                .as_deref()
+                .unwrap_or("q: quit | ?: help | R: refresh | 1/2/3: change tab");
+            let hints = Paragraph::new(hint_text).fg(Color::DarkGray).block(
+                Block::bordered()
+                    .title(" jjscope ")
+                    .border_type(BorderType::Rounded)
+                    .fg(Color::default()),
+            );
 
-            f.render_widget(tabs, header_chunks[1]);
+            f.render_widget(hints, header_chunks[1]);
         }
 
         if let Some(current_tab) = self.get_current_tab() {
@@ -282,6 +289,10 @@ impl<'a> App<'a> {
 
     #[instrument(level = "trace", skip(self))]
     pub fn input(&mut self, event: Event) -> Result<bool> {
+        if matches!(event, Event::Key(key) if key.kind == event::KeyEventKind::Press) {
+            self.status_message = None;
+        }
+
         if let Some(popup) = self.popup.as_mut() {
             match popup.input(event.clone())? {
                 ComponentInputResult::HandledAction(app_action) => {

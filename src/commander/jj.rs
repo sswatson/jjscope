@@ -139,6 +139,22 @@ impl Commander {
             .context("Failed executing jj absorb")
     }
 
+    /// Undo the last operation. Maps to `jj undo`
+    #[instrument(level = "trace", skip(self))]
+    pub fn run_undo(&self) -> Result<()> {
+        self.jj(["undo"])
+            .run_void()
+            .context("Failed executing jj undo")
+    }
+
+    /// Redo the most recently undone operation. Maps to `jj redo`
+    #[instrument(level = "trace", skip(self))]
+    pub fn run_redo(&self) -> Result<()> {
+        self.jj(["redo"])
+            .run_void()
+            .context("Failed executing jj redo")
+    }
+
     /// Generate a new change id for a revision. Maps to `jj metaedit --update-change-id <revision>`
     #[instrument(level = "trace", skip(self))]
     pub fn run_metaedit_update_change_id(
@@ -303,6 +319,24 @@ mod tests {
             .commander
             .run_edit(head.commit_id.as_str(), false)?;
         assert_eq!(head, test_repo.commander.get_current_head()?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_undo_redo() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        let head = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([head.commit_id.as_str()])?;
+        let new_head = test_repo.commander.get_current_head()?;
+        assert_ne!(head, new_head);
+
+        test_repo.commander.run_undo()?;
+        assert_eq!(head, test_repo.commander.get_current_head()?);
+
+        test_repo.commander.run_redo()?;
+        assert_eq!(new_head, test_repo.commander.get_current_head()?);
 
         Ok(())
     }

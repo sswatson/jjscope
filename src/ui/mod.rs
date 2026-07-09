@@ -19,6 +19,7 @@ pub enum AppAction {
     ViewLog(Head),
     ChangeHead(Head),
     SetPopup(Option<Box<dyn Component>>),
+    SetStatusMessage(String),
     Multiple(Vec<AppAction>),
     RefreshTab(),
 }
