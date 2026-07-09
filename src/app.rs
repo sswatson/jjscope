@@ -248,7 +248,7 @@ impl<'a> App<'a> {
                 .fg(Color::DarkGray)
                 .block(
                     Block::bordered()
-                        .title(" blazingjj ")
+                        .title(" jjscope ")
                         .border_type(BorderType::Rounded)
                         .fg(Color::default()),
                 );

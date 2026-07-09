@@ -35,14 +35,14 @@ pub fn get_env() -> &'static Env {
 #[derive(Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "kebab-case", default)]
 pub struct JjConfig {
-    pub blazingjj: JjConfigBlazingjj,
+    pub jjscope: JjConfigJjscope,
     pub ui: JjConfigUi,
     pub templates: JjConfigTemplates,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case", default)]
-pub struct JjConfigBlazingjj {
+pub struct JjConfigJjscope {
     highlight_color: Color,
     diff_format: Option<DiffFormat>,
     diff_tool: Option<String>,
@@ -52,7 +52,7 @@ pub struct JjConfigBlazingjj {
     keybinds: Option<KeybindsConfig>,
 }
 
-impl Default for JjConfigBlazingjj {
+impl Default for JjConfigJjscope {
     fn default() -> Self {
         Self {
             highlight_color: Color::Rgb(50, 50, 150),
@@ -87,7 +87,7 @@ pub struct JjConfigTemplates {
 
 impl JjConfig {
     pub fn diff_format(&self) -> DiffFormat {
-        self.blazingjj
+        self.jjscope
             .diff_format
             .clone()
             .or_else(|| self.ui.diff.format.clone())
@@ -96,7 +96,7 @@ impl JjConfig {
     }
 
     pub fn diff_tool(&self) -> Option<Option<String>> {
-        match self.blazingjj.diff_tool.clone() {
+        match self.jjscope.diff_tool.clone() {
             tool @ Some(_) => Some(tool),
             _ if self.ui.diff.tool.is_some() => Some(None),
             _ => None,
@@ -104,11 +104,11 @@ impl JjConfig {
     }
 
     pub fn highlight_color(&self) -> Color {
-        self.blazingjj.highlight_color
+        self.jjscope.highlight_color
     }
 
     pub fn bookmark_template(&self) -> String {
-        self.blazingjj
+        self.jjscope
             .bookmark_template
             .clone()
             .or(self.templates.git_push_bookmark.clone())
@@ -116,15 +116,15 @@ impl JjConfig {
     }
 
     pub fn layout(&self) -> JJLayout {
-        self.blazingjj.layout
+        self.jjscope.layout
     }
 
     pub fn layout_percent(&self) -> u16 {
-        self.blazingjj.layout_percent
+        self.jjscope.layout_percent
     }
 
     pub fn keybinds(&self) -> Option<&KeybindsConfig> {
-        self.blazingjj.keybinds.as_ref()
+        self.jjscope.keybinds.as_ref()
     }
 }
 

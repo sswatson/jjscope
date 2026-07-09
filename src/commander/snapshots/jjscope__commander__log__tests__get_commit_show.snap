@@ -1,0 +1,6 @@
+---
+source: src/commander/log.rs
+assertion_line: 345
+expression: show
+---
+"Commit ID: [COMMIT_ID]\nChange ID: [Change ID]\nAuthor   : jjscope <jjscope@example.com> (([DATE_TIME]))\nCommitter: jjscope <jjscope@example.com> (([DATE_TIME]))\n\n    (no description set)\n\nAdded regular file README:\n        1: AAA"

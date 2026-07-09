@@ -1,0 +1,8 @@
+---
+source: src/commander/files.rs
+assertion_line: 302
+expression: "test_repo.commander.get_file_diff(&head, &file, &DiffFormat::ColorWords,\nfalse)?"
+---
+Some(
+    "Added regular file README:\n        1: AAA\n",
+)

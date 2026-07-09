@@ -1,17 +1,17 @@
 [package]
-name = "blazingjj"
+name = "jjscope"
 description = "TUI for Jujutsu/jj"
 version = "0.8.0"
 edition = "2024"
 license = "Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/blazingjj/blazingjj"
+repository = "https://github.com/sswatson/jjscope"
 authors = ["Charles Crete <charles@cretezy.com>"]
 rust-version = "1.88.0"
 
 [package.metadata.binstall]
 # `cargo binstall` gets confused by the `v` before versions in archive name.
-pkg-url = "{ repo }/releases/download/v{ version }/blazingjj-v{ version }-{ target }.{ archive-format }"
+pkg-url = "{ repo }/releases/download/v{ version }/jjscope-v{ version }-{ target }.{ archive-format }"
 
 
 [dependencies]

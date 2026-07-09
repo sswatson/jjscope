@@ -1,0 +1,6 @@
+---
+source: src/commander/bookmarks.rs
+assertion_line: 287
+expression: bookmark_show
+---
+"Commit ID: [COMMIT_ID]\nChange ID: [Change ID]\nBookmarks: test test@git\nAuthor   : jjscope <jjscope@example.com> (([DATE_TIME]))\nCommitter: jjscope <jjscope@example.com> (([DATE_TIME]))\n\n    (no description set)\n"

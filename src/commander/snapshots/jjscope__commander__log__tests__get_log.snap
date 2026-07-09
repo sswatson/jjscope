@@ -1,5 +1,6 @@
 ---
 source: src/commander/log.rs
+assertion_line: 316
 expression: log.graph
 ---
 "@  [LINE]\n│  (empty) (no description set)\n◆  [LINE]\n"

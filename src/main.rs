@@ -86,7 +86,7 @@ fn main() -> Result<()> {
 /// and perform basic initialisation
 fn init_env() -> Result<Env> {
     // Configure tracing to log file
-    let should_log = std::env::var("BLAZINGJJ_LOG")
+    let should_log = std::env::var("JJSCOPE_LOG")
         .map(|log| log == "1" || log.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
@@ -94,7 +94,7 @@ fn init_env() -> Result<Env> {
         let log_file = OpenOptions::new()
             .append(true)
             .create(true)
-            .open("blazingjj.log")
+            .open("jjscope.log")
             .unwrap();
 
         Some(
@@ -109,7 +109,7 @@ fn init_env() -> Result<Env> {
     };
 
     // Configure tracing to Chrome
-    let should_trace = std::env::var("BLAZINGJJ_TRACE")
+    let should_trace = std::env::var("JJSCOPE_TRACE")
         .map(|log| log == "1" || log.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     let (trace_layer, _guard) = if should_trace {
@@ -125,7 +125,7 @@ fn init_env() -> Result<Env> {
         .with(trace_layer);
     tracing::subscriber::set_global_default(subscriber)?;
 
-    info!("Starting blazingjj");
+    info!("Starting jjscope");
 
     // Parse arguments and determine path
     let args = Args::parse();

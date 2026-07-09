@@ -1,8 +1,8 @@
 <div class="title-block" style="text-align: center;" align="center">
 
-# blazingjj - A TUI for [Jujutsu/jj](https://github.com/jj-vcs/jj)
+# jjscope - A TUI for [Jujutsu/jj](https://github.com/jj-vcs/jj)
 
-<p><img title="blazingjj logo" src="docs/logo.png" width="320" height="320"></p>
+<p><img title="jjscope logo" src="docs/logo.png" width="320" height="320"></p>
 
 Built in Rust with Ratatui. Interacts with `jj` CLI.
 
@@ -13,10 +13,12 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
 - Log
   - Scroll through the jj log and view change details in side panel
   - Create new changes from selected change with `n`
+  - Insert a new change, or move the selected change, between marked changes with `i`/`I`
   - Edit changes with `e`/`E`
   - Describe changes with `d`
   - Abandon changes with `a`
   - Absorb a change's diff into its mutable ancestors with `A`
+  - Generate a new change id (resolve divergence) with `c`/`C`
   - Toggle between color words and git diff with `p`
   - See different revset with `r`
   - Set a bookmark to selected change with `b`
@@ -34,44 +36,45 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - Create with `c`, rename with `r`, delete with `d`, forget with `f`
   - Track bookmarks with `t`, untrack bookmarks with `T`
   - Create new change with `n`, edit change with `e`/`E`
-- Command log: View every command blazingjj executes
-- Config: Configure blazingjj with your jj config
-- Command box: Run jj commands directly in blazingjj with `:`
+  - Push a single bookmark with `p`
+- Command log: View every command jjscope executes
+- Config: Configure jjscope with your jj config
+- Command box: Run jj commands directly in jjscope with `:`
 - Help: See all key mappings with `?`
 
 ## Setup
 
 Make sure you have [`jj`](https://martinvonz.github.io/jj/latest/install-and-setup) installed first.
 
-- With [`cargo binstall`](https://github.com/cargo-bins/cargo-binstall): `cargo binstall blazingjj`
-- With `cargo install`: `cargo install blazingjj --locked` (may take a few moments to compile)
-- With pre-built binaries: [View releases](https://github.com/blazingjj/blazingjj/releases)
+- With [`cargo binstall`](https://github.com/cargo-bins/cargo-binstall): `cargo binstall jjscope`
+- With `cargo install`: `cargo install jjscope --locked` (may take a few moments to compile)
+- With pre-built binaries: [View releases](https://github.com/sswatson/jjscope/releases)
 
-To build and install a pre-release version: `cargo install --git https://github.com/blazingjj/blazingjj.git --locked`
+To build and install a pre-release version: `cargo install --git https://github.com/sswatson/jjscope.git --locked`
 
 ## Configuration
 
 You can optionally configure the following options through your jj config:
 
-- `blazingjj.highlight-color`: Changes the highlight color. Can use named colors. Defaults to `#323264`
-- `blazingjj.diff-format`: Change the default diff format. Can be `color-words` or `git`. Defaults to `color_words`
-  - If `blazingjj.diff-format` is not set but `ui.diff.format` is, the latter will be used
-- `blazingjj.diff-tool`: Specify which diff tool to use by default
-  - If `blazingjj.diff-tool` is not set but `ui.diff.tool` is, the latter will be used
-- `blazingjj.bookmark-template`: Change the bookmark name template for generated bookmark names. Defaults to `'push-' ++ change_id.short()`
-  - If `blazingjj.bookmark-template` is not set but `templates.git_push_bookmark` is, the latter will be used
-- `blazingjj.layout`: Changes the layout of the main and details panel. Can be `horizontal` (default) or `vertical`
-- `blazingjj.layout-percent`: Changes the layout split of the main page. Should be number between 0 and 100. Defaults to `50`
+- `jjscope.highlight-color`: Changes the highlight color. Can use named colors. Defaults to `#323264`
+- `jjscope.diff-format`: Change the default diff format. Can be `color-words` or `git`. Defaults to `color_words`
+  - If `jjscope.diff-format` is not set but `ui.diff.format` is, the latter will be used
+- `jjscope.diff-tool`: Specify which diff tool to use by default
+  - If `jjscope.diff-tool` is not set but `ui.diff.tool` is, the latter will be used
+- `jjscope.bookmark-template`: Change the bookmark name template for generated bookmark names. Defaults to `'push-' ++ change_id.short()`
+  - If `jjscope.bookmark-template` is not set but `templates.git_push_bookmark` is, the latter will be used
+- `jjscope.layout`: Changes the layout of the main and details panel. Can be `horizontal` (default) or `vertical`
+- `jjscope.layout-percent`: Changes the layout split of the main page. Should be number between 0 and 100. Defaults to `50`
 
-Example: `jj config set --user blazingjj.diff-format "color-words"` (for storing in [user config file](https://martinvonz.github.io/jj/latest/config/#user-config-file), repo config is also supported)
+Example: `jj config set --user jjscope.diff-format "color-words"` (for storing in [user config file](https://martinvonz.github.io/jj/latest/config/#user-config-file), repo config is also supported)
 
 ## Usage
 
-To start blazingjj for the repository in the current directory: `blazingjj`
+To start jjscope for the repository in the current directory: `jjscope`
 
-To use a different repository: `blazingjj --path ~/path/to/repo`
+To use a different repository: `jjscope --path ~/path/to/repo`
 
-To start with a different default revset: `blazingjj -r '::@'`
+To start with a different default revset: `jjscope -r '::@'`
 
 ## Key mappings
 
@@ -99,10 +102,18 @@ See all key mappings for the current tab with `?`.
 - Toggle details panel wrapping with `W`
 - Create new change after highlighted change with `n` (`jj new`)
   - Create new change and describe with `N` (`jj new -m`)
+- Insert a new change between marked changes with `i` (`jj new -A -B`)
+  - Mark the changes to insert after, press `Enter`, mark the changes to insert before, then press
+    `Enter` again to confirm. Either set can be left empty. Press `Esc` to cancel.
+- Move the highlighted change between marked changes with `I` (`jj rebase -r -A -B`)
+  - Same marking flow as inserting a new change, but moves the highlighted change instead of
+    creating a new one
 - Edit highlighted change with `e` (`jj edit`)
   - Edit highlighted change ignoring immutability with `E` (`jj edit --ignore-immutable`)
 - Abandon a change with `a` (`jj abandon`)
 - Absorb the highlighted change's diff into its mutable ancestors with `A` (`jj absorb --from`)
+- Generate a new change id for the highlighted change with `c` (`jj metaedit --update-change-id`), useful for resolving divergence
+  - Generate a new change id ignoring immutability with `C` (`jj metaedit --update-change-id --ignore-immutable`)
 - Describe the highlighted change with `d` (`jj describe`)
   - Save with `Ctrl+s`
   - Cancel with `Esc`
@@ -116,7 +127,6 @@ See all key mappings for the current tab with `?`.
   - Git fetch all remotes with `F` (`jj git fetch --all-remotes`)
 - Git push with `p` (`jj git push`)
   - Git push all bookmarks with `P` (`jj git push --all`)
-  - Use `Ctrl+p` or `Ctrl+P` to include pushing new bookmarks (`--allow-new`)
 
 ### Files tab
 
@@ -139,6 +149,7 @@ See all key mappings for the current tab with `?`.
   - Create a new change and describe with `N` (`jj new -m`)
 - Edit the highlighted bookmark's change with `e` (`jj edit`)
   - Edit the highlighted bookmark's change ignoring immutability with `E` (`jj edit --ignore-immutable`)
+- Push the highlighted bookmark with `p` (`jj git push -b <bookmark>`)
 
 ### Command log tab
 
@@ -150,7 +161,7 @@ See all key mappings for the current tab with `?`.
 Keys can be configured
 
 ```toml
-[blazingjj.keybinds.log_tab]
+[jjscope.keybinds.log-tab]
 save = "ctrl+s"
 ```
 
@@ -158,7 +169,7 @@ See more in [keybindings.md](docs/keybindings.md)
 
 ## Related Projects
 
- * [blazingjj.nvim](https://opencommit.eu/sejo/blazingjj.nvim) -- A Neovim plugin that provides a floating window interface for blazingjj
+ * [jjscope.nvim](https://github.com/sswatson/jjscope.nvim) -- A Neovim plugin that provides a floating window interface for jjscope
 
 ## Development
 
@@ -172,10 +183,10 @@ See more in [keybindings.md](docs/keybindings.md)
 
 ### Logging/Tracing
 
-blazingjj has 2 debugging tools:
+jjscope has 2 debugging tools:
 
-1. Logging: Enabled by setting `BLAZINGJJ_LOG=1` when running. Produces a `blazingjj.log` log file
-2. Tracing: Enabled by setting `BLAZINGJJ_TRACE=1` when running. Produces `trace-*.json` Chrome trace file, for `chrome://tracing` or [ui.perfetto.dev](https://ui.perfetto.dev)
+1. Logging: Enabled by setting `JJSCOPE_LOG=1` when running. Produces a `jjscope.log` log file
+2. Tracing: Enabled by setting `JJSCOPE_TRACE=1` when running. Produces `trace-*.json` Chrome trace file, for `chrome://tracing` or [ui.perfetto.dev](https://ui.perfetto.dev)
 
 ## Release process
 
@@ -188,4 +199,4 @@ crates.io. That's it.
 
 ## Acknowledgements
 
-Blazingjj is a fork of lazyjj, started by Charles Crete in 2023.
+jjscope is a fork of blazingjj (itself a fork of lazyjj, started by Charles Crete in 2023).

@@ -4,5 +4,5 @@
     Also make sure to have proper commit messages, those are more important than
     the PR message.
 
-    blazingjj has a CHANGELOG.md file, make sure to update it if needed
+    jjscope has a CHANGELOG.md file, make sure to update it if needed
 -->

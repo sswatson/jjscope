@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The keybinds config section is now kebab-cased: `[blazingjj.keybinds.log_tab]` must be
   changed to `[blazingjj.keybinds.log-tab]`
+- Fork project and change name from "blazingjj" to "jjscope": the binary, crate, config
+  table (`[blazingjj]` → `[jjscope]`), env vars (`BLAZINGJJ_LOG`/`BLAZINGJJ_TRACE` →
+  `JJSCOPE_LOG`/`JJSCOPE_TRACE`), and log file (`blazingjj.log` → `jjscope.log`) are all renamed
 
 ### Added
 
@@ -23,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Message popup now supports scrolling with a scrollbar
 - Command popup output now preserves ANSI color
 - Drag to resize pane divider in all tabs
+- Bookmarks tab: push a single bookmark by name with `p` (`jj git push -b`)
+- Log tab: generate a new change id for the selected change with `c`/`C`
+  (`jj metaedit --update-change-id`), useful for resolving divergence
+- Log tab: insert a new change (`i`) or move the selected change (`I`) between marked changes,
+  supporting combined `-A`/`-B` insert-after/insert-before anchors for `jj new`/`jj rebase`
 
 ### Changed
 
@@ -31,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Describing a commit with a message starting with a dash no longer fails
+- Git push no longer passes `--allow-new`, which was removed in jj 0.42 and made every
+  "push with new bookmarks" keybinding (`Ctrl+p`/`Ctrl+Shift+p`) fail; new bookmarks are
+  now tracked automatically by jj itself, so those keybindings were merged into the
+  regular push keybindings (`p`/`Shift+p`)
 
 ## [0.8.0] - 2026-04-19
 
@@ -75,7 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Command log tab
 
 <!-- next-url -->
-[Unreleased]: https://github.com/blazingjj/blazingjj/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/sswatson/jjscope/compare/v0.8.0...HEAD
 [0.8.0]: https://github.com/blazingjj/blazingjj/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/blazingjj/blazingjj/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/blazingjj/blazingjj/compare/v0.6.1...v0.7.0

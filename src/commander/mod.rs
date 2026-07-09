@@ -15,7 +15,7 @@ exposes one method per jj operation. Each operation builds a single
 invocation with [Commander::jj], which returns a [JjCommand] builder:
 
 * [Commander::new] - Create a new instance
-* [Commander::check_jj_version] - Check jj works with blazingjj
+* [Commander::check_jj_version] - Check jj works with jjscope
 * [Commander::jj] - Start building a single jj invocation
 * [JjCommand::run] - Execute the command and return its output
 * [JjCommand::run_void] - Execute the command and discard the output
@@ -54,7 +54,7 @@ use crate::env::DiffFormat;
 use crate::env::Env;
 use crate::env::get_env;
 
-/// The oldest version of jj that is known to work with blazingjj.
+/// The oldest version of jj that is known to work with jjscope.
 /// 0.33.0 changed the template language for evolog/obslog
 const JJ_MIN_VERSION: &str = "0.33.0";
 const JJ_VERSION_IGNORE_HELP: &str = "If you want to continue anyway, use --ignore-jj-version";
@@ -167,7 +167,7 @@ impl Commander {
         }
     }
 
-    /// Check that the version of jj is recent enough to work with blazingjj
+    /// Check that the version of jj is recent enough to work with jjscope
     ///
     /// See also [JJ_MIN_VERSION]
     #[instrument(level = "trace", skip(self))]
@@ -380,11 +380,11 @@ pub mod tests {
 
     impl TestRepo {
         pub fn new() -> Result<Self> {
-            let directory = TempDir::with_prefix("blazingjj")?;
+            let directory = TempDir::with_prefix("jjscope")?;
 
             let jj_config_toml = vec![
-                r#"user.email="blazingjj@example.com""#.to_owned(),
-                r#"user.name="blazingjj""#.to_owned(),
+                r#"user.email="jjscope@example.com""#.to_owned(),
+                r#"user.name="jjscope""#.to_owned(),
                 r#"ui.color="never""#.to_owned(),
             ];
 
