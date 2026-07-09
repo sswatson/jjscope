@@ -1,8 +1,6 @@
 <div class="title-block" style="text-align: center;" align="center">
 
-# jjscope - A TUI for [Jujutsu/jj](https://github.com/jj-vcs/jj)
-
-<p><img title="jjscope logo" src="docs/logo.png" width="320" height="320"></p>
+# jjscope - A TUI for [Jujutsu](https://github.com/jj-vcs/jj)
 
 Built in Rust with Ratatui. Interacts with `jj` CLI.
 
