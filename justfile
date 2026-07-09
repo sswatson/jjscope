@@ -14,4 +14,4 @@ build:
   cargo build --release
 
 install: build
-  install target/release/blazingjj ~/.local/bin/blazingjj
+  install target/release/jjscope ~/.local/bin/jjscope
