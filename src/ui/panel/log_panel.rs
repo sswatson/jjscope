@@ -63,6 +63,9 @@ pub struct LogPanel<'a> {
     /// Currently marked commits
     pub marked_heads: HashSet<CommitId>,
 
+    /// When set, shown as the panel title instead of the usual "Log"/"Log for: <revset>" title
+    pub title_override: Option<String>,
+
     /// Area where panel was drawn. This includes the border.
     panel_rect: Rect,
 
@@ -136,6 +139,7 @@ impl<'a> LogPanel<'a> {
 
             head,
             marked_heads: HashSet::new(),
+            title_override: None,
 
             panel_rect: Rect::ZERO,
 
@@ -364,9 +368,10 @@ impl Component for LogPanel<'_> {
     fn draw(&mut self, f: &mut Frame<'_>, area: Rect) -> Result<()> {
         self.panel_rect = area;
 
-        let title = match &self.log_revset {
-            Some(log_revset) => &format!(" Log for: {log_revset} "),
-            None => " Log ",
+        let title = match (&self.title_override, &self.log_revset) {
+            (Some(title_override), _) => title_override.clone(),
+            (None, Some(log_revset)) => format!(" Log for: {log_revset} "),
+            (None, None) => " Log ".to_owned(),
         };
 
         let log_lines = self.log_lines();

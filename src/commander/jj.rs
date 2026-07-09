@@ -22,6 +22,47 @@ impl Commander {
         self.jj(args).run_void().context("Failed executing jj new")
     }
 
+    /// Create a new change inserted after and/or before revisions.
+    /// Maps to `jj new -A <revision>... -B <revision>...`
+    #[instrument(level = "trace", skip(self, after, before))]
+    pub fn run_new_insert(&self, after: &[CommitId], before: &[CommitId]) -> Result<()> {
+        let mut args = vec!["new".to_owned()];
+        for commit_id in after {
+            args.push("-A".to_owned());
+            args.push(commit_id.as_str().to_owned());
+        }
+        for commit_id in before {
+            args.push("-B".to_owned());
+            args.push(commit_id.as_str().to_owned());
+        }
+
+        self.jj(args).run_void().context("Failed executing jj new")
+    }
+
+    /// Move a change so that it's inserted after and/or before revisions.
+    /// Maps to `jj rebase -r <revision> -A <revision>... -B <revision>...`
+    #[instrument(level = "trace", skip(self, after, before))]
+    pub fn run_rebase_insert(
+        &self,
+        revision: &str,
+        after: &[CommitId],
+        before: &[CommitId],
+    ) -> Result<()> {
+        let mut args = vec!["rebase".to_owned(), "-r".to_owned(), revision.to_owned()];
+        for commit_id in after {
+            args.push("-A".to_owned());
+            args.push(commit_id.as_str().to_owned());
+        }
+        for commit_id in before {
+            args.push("-B".to_owned());
+            args.push(commit_id.as_str().to_owned());
+        }
+
+        self.jj(args)
+            .run_void()
+            .context("Failed executing jj rebase")
+    }
+
     /// Duplicate a change. Maps to `jj duplicate`
     pub fn run_duplicate(&self, revision: &str) -> Result<()> {
         self.jj(["duplicate", revision])

@@ -49,6 +49,29 @@ const EDIT_POPUP_ID: u16 = 2;
 const ABANDON_POPUP_ID: u16 = 3;
 const SQUASH_POPUP_ID: u16 = 4;
 const METAEDIT_UPDATE_CHANGE_ID_POPUP_ID: u16 = 5;
+const INSERT_POPUP_ID: u16 = 6;
+
+/// State of the two-phase "insert between" flow, which collects `-A`/`-B` anchors for
+/// `jj new`/`jj rebase` by reusing the log panel's normal commit marking.
+#[derive(Clone)]
+enum InsertState {
+    /// Not currently collecting anchors.
+    Idle,
+    /// Marking the `-A` (insert-after) anchors. `moving` is the change being moved into
+    /// position, or `None` if a brand new change is being created instead.
+    CollectingAfter { moving: Option<Head> },
+    /// Marking the `-B` (insert-before) anchors, having already collected the `-A` anchors.
+    CollectingBefore {
+        moving: Option<Head>,
+        after: Vec<CommitId>,
+    },
+    /// Anchors collected; the confirm popup is showing.
+    Confirming {
+        moving: Option<Head>,
+        after: Vec<CommitId>,
+        before: Vec<CommitId>,
+    },
+}
 
 /// Log tab. Shows `jj log` in main panel and shows selected change details of in details panel.
 pub struct LogTab<'a> {
@@ -91,6 +114,8 @@ pub struct LogTab<'a> {
     edit_ignore_immutable: bool,
 
     metaedit_update_change_id_ignore_immutable: bool,
+
+    insert_state: InsertState,
 
     config: JjConfig,
     pane_divider: PaneDivider,
@@ -182,6 +207,8 @@ impl<'a> LogTab<'a> {
             edit_ignore_immutable: false,
 
             metaedit_update_change_id_ignore_immutable: false,
+
+            insert_state: InsertState::Idle,
 
             config,
             pane_divider,
@@ -293,6 +320,14 @@ each other in code:
 * `handle_<action>` - Set up the dialog and show it.
 * `execute_<action>` - Perform some action after the dialog closed.
 */
+fn short_commit_ids(commit_ids: &[CommitId]) -> String {
+    commit_ids
+        .iter()
+        .map(|commit_id| commit_id.as_str().chars().take(8).collect::<String>())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 impl<'a> LogTab<'a> {
     fn handle_new(&mut self, describe: bool) -> Result<ComponentInputResult> {
         let mark_count = self.log_panel.marked_heads.len();
@@ -337,6 +372,118 @@ impl<'a> LogTab<'a> {
             self.describe_textarea = Some(textarea);
         }
         Ok(Some(AppAction::ChangeHead(self.head.clone())))
+    }
+
+    /// Start the two-phase "insert between" flow: the log panel's normal marking is reused to
+    /// collect `-A` (insert-after) anchors first, then `-B` (insert-before) anchors. `moving` is
+    /// the change being relocated, or `None` if a brand new change should be created instead.
+    fn start_insert(&mut self, moving: Option<Head>) {
+        self.log_panel.extract_and_clear_head_marks();
+        self.insert_state = InsertState::CollectingAfter { moving };
+        self.update_insert_title();
+    }
+
+    fn cancel_insert(&mut self) {
+        self.log_panel.extract_and_clear_head_marks();
+        self.insert_state = InsertState::Idle;
+        self.log_panel.title_override = None;
+    }
+
+    fn update_insert_title(&mut self) {
+        let hint = match &self.insert_state {
+            InsertState::Idle => None,
+            InsertState::CollectingAfter { .. } => Some(
+                " Insert: mark AFTER-anchors (space: mark, enter: next, esc: cancel) ".to_owned(),
+            ),
+            InsertState::CollectingBefore { .. } => Some(
+                " Insert: mark BEFORE-anchors (space: mark, enter: confirm, esc: cancel) "
+                    .to_owned(),
+            ),
+            InsertState::Confirming { .. } => None,
+        };
+        self.log_panel.title_override = hint;
+    }
+
+    /// Advance the insert flow on Enter: collects the current marks for the phase that just
+    /// finished, and either moves to the next phase or opens the final confirmation popup.
+    fn advance_insert(&mut self) -> Result<ComponentInputResult> {
+        match self.insert_state.clone() {
+            InsertState::Idle => Ok(ComponentInputResult::Handled),
+            InsertState::CollectingAfter { moving } => {
+                let after = self.log_panel.extract_and_clear_head_marks();
+                self.insert_state = InsertState::CollectingBefore { moving, after };
+                self.update_insert_title();
+                Ok(ComponentInputResult::Handled)
+            }
+            InsertState::CollectingBefore { moving, after } => {
+                let before = self.log_panel.extract_and_clear_head_marks();
+                self.log_panel.title_override = None;
+
+                if after.is_empty() && before.is_empty() {
+                    self.insert_state = InsertState::Idle;
+                    return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                        Some(Box::new(MessagePopup::new(
+                            "Insert",
+                            "No after- or before-anchors were marked.",
+                        ))),
+                    )));
+                }
+
+                let mut lines = vec![Line::from(if moving.is_some() {
+                    "Are you sure you want to move the selected change here?"
+                } else {
+                    "Are you sure you want to insert a new change here?"
+                })];
+                if !after.is_empty() {
+                    lines.push(Line::from(format!("After: {}", short_commit_ids(&after))));
+                }
+                if !before.is_empty() {
+                    lines.push(Line::from(format!("Before: {}", short_commit_ids(&before))));
+                }
+
+                self.insert_state = InsertState::Confirming {
+                    moving,
+                    after,
+                    before,
+                };
+                self.popup = ConfirmDialogState::new(
+                    INSERT_POPUP_ID,
+                    Span::styled(" Insert ", Style::new().bold().cyan()),
+                    Text::from(lines).fg(Color::default()),
+                );
+                self.popup
+                    .with_yes_button(ButtonLabel::YES.clone())
+                    .with_no_button(ButtonLabel::NO.clone())
+                    .with_listener(Some(self.popup_tx.clone()))
+                    .open();
+                Ok(ComponentInputResult::Handled)
+            }
+            InsertState::Confirming { .. } => Ok(ComponentInputResult::Handled),
+        }
+    }
+
+    // Execute the insert command, after self.popup returned
+    fn execute_insert(&mut self) -> Result<Option<AppAction>> {
+        let state = std::mem::replace(&mut self.insert_state, InsertState::Idle);
+        let InsertState::Confirming {
+            moving,
+            after,
+            before,
+        } = state
+        else {
+            return Ok(None);
+        };
+
+        match moving {
+            Some(moving) => {
+                new_commander().run_rebase_insert(moving.commit_id.as_str(), &after, &before)?;
+            }
+            None => {
+                new_commander().run_new_insert(&after, &before)?;
+            }
+        }
+
+        Ok(Some(AppAction::RefreshTab()))
     }
 
     fn handle_abandon(&mut self) -> Result<ComponentInputResult> {
@@ -436,6 +583,13 @@ impl<'a> LogTab<'a> {
 
             LogTabEvent::CreateNew { describe } => {
                 return self.handle_new(describe);
+            }
+            LogTabEvent::InsertNew => {
+                self.start_insert(None);
+            }
+            LogTabEvent::InsertMove => {
+                let moving = self.head.clone();
+                self.start_insert(Some(moving));
             }
             LogTabEvent::Rebase => {
                 let source_change = new_commander().get_current_head()?;
@@ -726,6 +880,9 @@ impl Component for LogTab<'_> {
                     self.set_head(new_commander().get_current_head()?);
                     return Ok(Some(AppAction::ChangeHead(self.head.clone())));
                 }
+                INSERT_POPUP_ID => {
+                    return self.execute_insert();
+                }
                 _ => {}
             }
         }
@@ -939,6 +1096,21 @@ impl Component for LogTab<'_> {
                 }
 
                 return Ok(ComponentInputResult::Handled);
+            }
+
+            if !matches!(self.insert_state, InsertState::Idle) {
+                match self.keybinds.match_event(key) {
+                    LogTabEvent::OpenFiles => {
+                        // "enter" advances the insert flow instead of opening files while
+                        // anchors are being collected.
+                        return self.advance_insert();
+                    }
+                    LogTabEvent::Cancel => {
+                        self.cancel_insert();
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    _ => {}
+                }
             }
 
             if self.head_panel.input(key) {
