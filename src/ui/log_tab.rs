@@ -600,14 +600,11 @@ impl<'a> LogTab<'a> {
                     CopyToClipboard::to_clipboard_from(commit_id)
                 );
             }
-            LogTabEvent::Push {
-                all_bookmarks,
-                allow_new,
-            } => {
+            LogTabEvent::Push { all_bookmarks } => {
                 let commit_id = self.head.commit_id.clone();
 
                 let loader = LoaderPopup::new("Pushing".to_string(), move || {
-                    new_commander().git_push(all_bookmarks, allow_new, &commit_id)
+                    new_commander().git_push(all_bookmarks, &commit_id)
                 });
 
                 return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(

@@ -66,9 +66,7 @@ pub struct LogTabKeybindsConfig {
     pub rebase: Option<Keybind>,
 
     pub push: Option<Keybind>,
-    pub push_new: Option<Keybind>,
     pub push_all: Option<Keybind>,
-    pub push_all_new: Option<Keybind>,
     pub fetch: Option<Keybind>,
     pub fetch_all: Option<Keybind>,
 

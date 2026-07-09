@@ -35,17 +35,11 @@ pub enum LogTabEvent {
     ToggleDiffFormat,
 
     Refresh,
-    CreateNew {
-        describe: bool,
-    },
+    CreateNew { describe: bool },
     Duplicate,
     Rebase,
-    Squash {
-        ignore_immutable: bool,
-    },
-    EditChange {
-        ignore_immutable: bool,
-    },
+    Squash { ignore_immutable: bool },
+    EditChange { ignore_immutable: bool },
     Abandon,
     Absorb,
     Describe,
@@ -55,13 +49,8 @@ pub enum LogTabEvent {
     CopyChangeId,
     CopyRev,
 
-    Push {
-        all_bookmarks: bool,
-        allow_new: bool,
-    },
-    Fetch {
-        all_remotes: bool,
-    },
+    Push { all_bookmarks: bool },
+    Fetch { all_remotes: bool },
 
     OpenHelp,
 
@@ -106,10 +95,8 @@ impl Default for LogTabKeybinds {
             LogTabEvent::OpenFiles => "enter",
             LogTabEvent::CopyChangeId => "y",
             LogTabEvent::CopyRev => "shift+y",
-            event_push(false, false) => "p",
-            event_push(false, true) => "ctrl+p",
-            event_push(true, false) => "shift+p",
-            event_push(true, true) => "ctrl+shift+p",
+            event_push(false) => "p",
+            event_push(true) => "shift+p",
             LogTabEvent::Fetch { all_remotes: false } => "f",
             LogTabEvent::Fetch { all_remotes: true } => "shift+f",
             LogTabEvent::OpenHelp => "?",
@@ -169,10 +156,8 @@ impl LogTabKeybinds {
             LogTabEvent::CopyChangeId => config.copy_change_id,
             LogTabEvent::CopyRev => config.copy_rev,
             LogTabEvent::Rebase => config.rebase,
-            event_push(false, false) => config.push,
-            event_push(false, true) => config.push_new,
-            event_push(true, false) => config.push_all,
-            event_push(true, true) => config.push_all_new,
+            event_push(false) => config.push,
+            event_push(true) => config.push_all,
             LogTabEvent::Fetch { all_remotes: false } => config.fetch,
             LogTabEvent::Fetch { all_remotes: true } => config.fetch_all,
             LogTabEvent::OpenHelp => config.open_help,
@@ -204,19 +189,14 @@ impl LogTabKeybinds {
             LogTabEvent::CopyRev => "yank revision to clipboard",
             LogTabEvent::Fetch { all_remotes: false } => "git fetch",
             LogTabEvent::Fetch { all_remotes: true } => "git fetch all remotes",
-            event_push(false, false) => "git push",
-            event_push(false, true) => "git push with new bookmarks",
-            event_push(true, false) => "git push all bookmarks, except new",
-            event_push(true, true) => "git push all bookmarks",
+            event_push(false) => "git push",
+            event_push(true) => "git push all bookmarks",
         )
     }
 }
 
-fn event_push(all_bookmarks: bool, allow_new: bool) -> LogTabEvent {
-    LogTabEvent::Push {
-        all_bookmarks,
-        allow_new,
-    }
+fn event_push(all_bookmarks: bool) -> LogTabEvent {
+    LogTabEvent::Push { all_bookmarks }
 }
 
 #[test]
