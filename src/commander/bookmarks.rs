@@ -146,6 +146,29 @@ impl Commander {
         Ok(bookmarks)
     }
 
+    /// Get bookmarks pointing at a revision.
+    /// Maps to `jj bookmark list -r <revision>`
+    #[instrument(level = "trace", skip(self))]
+    pub fn get_bookmarks_at(&self, revision: &str) -> Result<Vec<Bookmark>, CommandError> {
+        let args = vec![
+            "bookmark".to_owned(),
+            "list".to_owned(),
+            "-r".to_owned(),
+            revision.to_owned(),
+            "-T".to_owned(),
+            format!(r#"if(present, {} ++ "\n", "")"#, BRANCH_TEMPLATE),
+        ];
+
+        let bookmarks: Vec<Bookmark> = self
+            .jj(args)
+            .run()?
+            .lines()
+            .filter_map(parse_bookmark)
+            .collect();
+
+        Ok(bookmarks)
+    }
+
     #[instrument(level = "trace", skip(self))]
     pub fn get_bookmarks_list(&self, show_all: bool) -> Result<Vec<Bookmark>, CommandError> {
         let mut args = vec![

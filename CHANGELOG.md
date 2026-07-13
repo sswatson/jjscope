@@ -40,9 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Describing a commit with a message starting with a dash no longer fails
 - Git push no longer passes `--allow-new`, which was removed in jj 0.42 and made every
-  "push with new bookmarks" keybinding (`Ctrl+p`/`Ctrl+Shift+p`) fail; new bookmarks are
-  now tracked automatically by jj itself, so those keybindings were merged into the
-  regular push keybindings (`p`/`Shift+p`)
+  "push with new bookmarks" keybinding (`Ctrl+p`/`Ctrl+Shift+p`) fail, so those keybindings
+  were merged into the regular push keybindings (`p`/`Shift+p`)
+- Log tab: pressing `p`/`Shift+p` on a revision whose only bookmark(s) are brand new
+  (never pushed/tracked) silently did nothing, since `jj git push -r <commit>` refuses
+  to create new remote bookmarks and exits 0 with just a warning; the log tab now
+  resolves bookmarks on the target revision and pushes them by name (`-b`), matching
+  what the bookmarks tab already did, falling back to `-r <commit>` for bookmark-less
+  revisions
 
 ## [0.8.0] - 2026-04-19
 

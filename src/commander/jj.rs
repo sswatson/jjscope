@@ -255,18 +255,31 @@ impl Commander {
     }
 
     /// Git push. Maps to `jj git push`
+    ///
+    /// When pushing a single revision, bookmarks pointing at it are pushed by name
+    /// (`-b`) rather than by revision (`-r`), since `-r` refuses to create brand-new
+    /// remote bookmarks (jj prints a warning and exits 0, so the push silently does
+    /// nothing). Revisions with no bookmark fall back to `-r <commit_id>`.
     #[instrument(level = "trace", skip(self))]
     pub fn git_push(
         &self,
         all_bookmarks: bool,
         commit_id: &CommitId,
     ) -> Result<String, CommandError> {
-        let mut args = vec!["git", "push"];
+        let mut args = vec!["git".to_owned(), "push".to_owned()];
         if all_bookmarks {
-            args.push("--all");
+            args.push("--all".to_owned());
         } else {
-            args.push("-r");
-            args.push(commit_id.as_str());
+            let bookmarks = self.get_bookmarks_at(commit_id.as_str())?;
+            if bookmarks.is_empty() {
+                args.push("-r".to_owned());
+                args.push(commit_id.as_str().to_owned());
+            } else {
+                for bookmark in bookmarks {
+                    args.push("-b".to_owned());
+                    args.push(bookmark.name);
+                }
+            }
         }
 
         self.jj(args).color().run()
@@ -569,6 +582,54 @@ mod tests {
 
         let bookmarks = test_repo.commander.get_bookmarks_list(false)?;
         assert_eq!(bookmarks, []);
+
+        Ok(())
+    }
+
+    #[test]
+    fn git_push_new_bookmark() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let remote_dir = tempfile::TempDir::with_prefix("jjscope-remote")?;
+
+        std::process::Command::new("git")
+            .args(["init", "--bare", "."])
+            .current_dir(remote_dir.path())
+            .output()?;
+        test_repo
+            .commander
+            .jj([
+                "git",
+                "remote",
+                "add",
+                "origin",
+                &remote_dir.path().to_string_lossy(),
+            ])
+            .run_void()?;
+
+        let head = test_repo.commander.get_current_head()?;
+        test_repo
+            .commander
+            .run_describe(head.commit_id.as_str(), "test commit")?;
+        test_repo.commander.create_bookmark("new-bookmark")?;
+        // Re-fetch: `run_describe` rewrote the commit, so `head` is now stale.
+        let head = test_repo.commander.get_current_head()?;
+
+        // A brand-new, never-tracked bookmark must actually be pushed (not silently
+        // no-op'd, which is what `jj git push -r <commit>` alone does).
+        test_repo.commander.git_push(false, &head.commit_id)?;
+
+        let remote_bookmarks = test_repo
+            .commander
+            .jj([
+                "log",
+                "-r",
+                "new-bookmark@origin",
+                "--no-graph",
+                "-T",
+                "commit_id",
+            ])
+            .run()?;
+        assert_eq!(remote_bookmarks.trim(), head.commit_id.as_str());
 
         Ok(())
     }
