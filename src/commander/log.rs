@@ -89,6 +89,43 @@ fn parse_head(text: &str) -> Result<Head> {
         })
 }
 
+/// Build a `templates.log_node=...` config override string that replaces the
+/// graph node glyph with `glyph` for each of `ids`, falling back to jj's
+/// usual node otherwise. `ids` are change or commit IDs in hex (both work
+/// unquoted as revset symbols, so callers can mix either). Returns `None` if
+/// there's nothing to override, so callers can skip passing `--config`.
+///
+/// Earlier entries in `overrides` take priority when a commit matches more
+/// than one, since the `if` chain short-circuits on the first match.
+fn build_log_node_config(overrides: &[(char, &[&str])]) -> Option<String> {
+    let fallback = "builtin_log_node".to_owned();
+    let template = overrides
+        .iter()
+        .filter(|(_, ids)| !ids.is_empty())
+        .rev()
+        .fold(fallback, |rest, (glyph, ids)| {
+            // Bare hex change/commit IDs are valid revset symbols on their
+            // own, so this avoids nesting string literals (e.g. via
+            // `commit_id("...")`) inside the outer `contained_in("...")`
+            // string, which would need careful escaping.
+            let revset = ids.iter().join("|");
+            format!(r#"if(self.contained_in("{revset}"), "{glyph}", {rest})"#)
+        });
+
+    if template == "builtin_log_node" {
+        return None;
+    }
+
+    // Elided-revision placeholders (shown as "(elided revisions)") aren't
+    // real commits, so `self` is falsy for them and `self.contained_in(...)`
+    // errors out instead of just returning false. Guard the same way
+    // `builtin_log_node` itself does, or the elided node renders as
+    // "<Error: No Commit available>" instead of "~".
+    Some(format!(
+        "templates.log_node=if(!self, builtin_log_node, {template})"
+    ))
+}
+
 impl Commander {
     fn execute_jj_log(&self, revset: &str, template: &str) -> Result<String, CommandError> {
         self.jj(["log", "--no-graph", "--template", template, "-r", revset])
@@ -111,8 +148,18 @@ impl Commander {
 
     /// Get log. Returns human readable log and mapping to log line to head.
     /// Maps to `jj log`
-    #[instrument(level = "trace", skip(self))]
-    pub fn get_log(&self, revset: &Option<String>) -> Result<LogOutput, CommandError> {
+    ///
+    /// `node_overrides` replaces the graph node glyph (`@`/`○`/`◆`/...) for
+    /// specific commits, e.g. to show marked or just-absorbed-into commits
+    /// with a distinct symbol instead of jj's usual node. Each entry is a
+    /// glyph and the change/commit IDs (in hex) that should show it; earlier
+    /// entries take priority if a commit matches more than one.
+    #[instrument(level = "trace", skip(self, node_overrides))]
+    pub fn get_log(
+        &self,
+        revset: &Option<String>,
+        node_overrides: &[(char, &[&str])],
+    ) -> Result<LogOutput, CommandError> {
         let mut args = vec![];
 
         if let Some(revset) = revset {
@@ -120,10 +167,18 @@ impl Commander {
             args.push(revset);
         }
 
+        let log_node_config = build_log_node_config(node_overrides);
+        let mut config_args = vec![];
+        if let Some(log_node_config) = &log_node_config {
+            config_args.push("--config");
+            config_args.push(log_node_config.as_str());
+        }
+
         // Force builtin_log_compact which uses 2 lines per change
         let graph = self
             .jj([
                 vec!["log", "--template", "builtin_log_compact"],
+                config_args.clone(),
                 args.clone(),
             ]
             .concat())
@@ -332,7 +387,7 @@ mod tests {
     fn get_log() -> Result<()> {
         let test_repo = TestRepo::new()?;
 
-        let log = test_repo.commander.get_log(&None)?;
+        let log = test_repo.commander.get_log(&None, &[])?;
 
         let mut settings = insta::Settings::clone_current();
         settings.add_filter(r"[k-z]{8} .*? [0-9a-fA-F]{8}", "[LINE]");
@@ -345,6 +400,57 @@ mod tests {
                 .as_ref()
                 .is_none_or(|graph_head| log.heads.contains(graph_head))
         }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_log_node_override() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        let head = test_repo.commander.get_current_head()?;
+        let commit_id = head.commit_id.as_str();
+
+        let log = test_repo
+            .commander
+            .get_log(&None, &[('X', &[commit_id])])?;
+
+        assert!(log.graph.lines().next().unwrap().starts_with('X'));
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_log_node_override_with_elided_revisions() -> Result<()> {
+        // A node override must not break rendering of the synthetic
+        // "(elided revisions)" placeholder node, which isn't a real commit
+        // (regression test: this used to render as
+        // "<Error: No Commit available>" instead of "~").
+        let test_repo = TestRepo::new()?;
+
+        let root_head = test_repo.commander.get_current_head()?;
+        fs::write(test_repo.directory.path().join("f.txt"), b"A")?;
+        test_repo.commander.run_new([root_head.commit_id.as_str()])?;
+        let middle_head = test_repo.commander.get_current_head()?;
+        fs::write(test_repo.directory.path().join("f.txt"), b"B")?;
+        test_repo
+            .commander
+            .run_new([middle_head.commit_id.as_str()])?;
+        let head = test_repo.commander.get_current_head()?;
+
+        // A revset naming only the root and current head, skipping
+        // middle_head in between, elides that middle commit.
+        let revset = format!(
+            "{}|{}",
+            root_head.commit_id.as_str(),
+            head.commit_id.as_str()
+        );
+        let log = test_repo
+            .commander
+            .get_log(&Some(revset), &[('X', &[head.commit_id.as_str()])])?;
+
+        assert!(log.graph.contains("(elided revisions)"));
+        assert!(!log.graph.contains("Error"));
 
         Ok(())
     }

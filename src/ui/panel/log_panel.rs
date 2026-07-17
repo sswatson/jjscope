@@ -80,9 +80,10 @@ pub struct LogPanel<'a> {
     config: JjConfig,
 }
 
-const LEFT_MARGIN_BLANK: char = ' ';
-const LEFT_MARGIN_MARKED: char = '>';
-const LEFT_MARGIN_ABSORBED: char = '*';
+/// Node glyph shown in place of jj's usual node (`@`/`○`/`◆`/...) for a marked commit.
+const NODE_MARKED: char = '✓';
+/// Node glyph shown in place of jj's usual node for a commit `jj absorb` just rewrote.
+const NODE_ABSORBED: char = '★';
 
 /*
 pub enum LogPanelEvent {
@@ -119,7 +120,7 @@ fn get_head_index(head: &Head, log_output: &Result<LogOutput, CommandError>) -> 
 impl<'a> LogPanel<'a> {
     pub fn new() -> Result<Self> {
         let log_revset = new_commander().env.default_revset.clone();
-        let log_output = new_commander().get_log(&log_revset);
+        let log_output = new_commander().get_log(&log_revset, &[]);
         let head = new_commander().get_current_head()?;
 
         let log_list_state = ListState::default().with_selected(get_head_index(&head, &log_output));
@@ -162,7 +163,14 @@ impl<'a> LogPanel<'a> {
 
     /// Run jj log and store output for display
     pub fn refresh_log_output(&mut self) {
-        self.log_output = new_commander().get_log(&self.log_revset);
+        let marked_ids: Vec<&str> = self.marked_heads.iter().map(CommitId::as_str).collect();
+        let absorbed_ids: Vec<&str> = self.absorbed_heads.iter().map(ChangeId::as_str).collect();
+        let node_overrides = [
+            (NODE_MARKED, marked_ids.as_slice()),
+            (NODE_ABSORBED, absorbed_ids.as_slice()),
+        ];
+
+        self.log_output = new_commander().get_log(&self.log_revset, &node_overrides);
         self.log_output_text = match self.log_output.as_ref() {
             Ok(log_output) => log_output
                 .graph
@@ -173,21 +181,13 @@ impl<'a> LogPanel<'a> {
     }
 
     /// Convert log output to a list of formatted lines
+    ///
+    /// Marked and absorbed-into commits are shown by replacing jj's graph node
+    /// glyph itself (via a `templates.log_node` override baked into
+    /// `log_output.graph`, see [Self::refresh_log_output]), rather than by
+    /// adding a separate gutter mark, so the selection reads as "this node,
+    /// right here" instead of an extra column to parse.
     fn output_to_lines(&self, log_output: &LogOutput) -> Vec<Line<'a>> {
-        // Add commit mark
-        let add_mark = |line: &mut Line, i: usize| {
-            let head_at_line = log_output.head_at(i);
-            let symbol = if head_at_line.is_some_and(|head| self.is_head_marked(head)) {
-                LEFT_MARGIN_MARKED
-            } else if head_at_line.is_some_and(|head| self.is_head_absorbed(head)) {
-                LEFT_MARGIN_ABSORBED
-            } else {
-                LEFT_MARGIN_BLANK
-            };
-            let span = Span::from(symbol.to_string());
-            line.spans.insert(0, span);
-        };
-
         // Set the background color of the line
         fn set_bg(line: &mut Line, bg_color: Color) {
             // Set background to use when no Span is present
@@ -204,9 +204,6 @@ impl<'a> LogPanel<'a> {
             .enumerate()
             .map(|(i, line)| {
                 let mut line = line.to_owned();
-
-                // Add padding at start
-                add_mark(&mut line, i);
 
                 // Highlight changes absorb just rewrote
                 if log_output
@@ -312,12 +309,18 @@ impl<'a> LogPanel<'a> {
     //
 
     /// Mark or unmark the specified head
+    ///
+    /// Re-runs `jj log` immediately: the mark is now shown by replacing the
+    /// commit's graph node glyph (see [Self::refresh_log_output]), which is
+    /// baked into the fetched log text rather than added at render time, so
+    /// it needs a fresh fetch to become visible.
     pub fn set_head_mark(&mut self, head: &Head, mark: bool) {
         if mark {
             self.marked_heads.insert(head.commit_id.clone());
         } else {
             self.marked_heads.remove(&head.commit_id);
         }
+        self.refresh_log_output();
     }
 
     /// Check if a head is marked for batch operation
@@ -332,8 +335,13 @@ impl<'a> LogPanel<'a> {
     }
 
     /// Extract the list of all marked heads and clear it
+    ///
+    /// Refreshes immediately, for the same reason [Self::set_head_mark] does:
+    /// the mark glyph is baked into the fetched log text.
     pub fn extract_and_clear_head_marks(&mut self) -> Vec<CommitId> {
-        self.marked_heads.drain().collect()
+        let commit_ids = self.marked_heads.drain().collect();
+        self.refresh_log_output();
+        commit_ids
     }
 
     //
@@ -346,8 +354,15 @@ impl<'a> LogPanel<'a> {
     }
 
     /// Clear the set of changes highlighted as absorbed into
+    ///
+    /// Refreshes immediately, for the same reason [Self::set_head_mark] does:
+    /// the highlight glyph is baked into the fetched log text.
     pub fn clear_absorbed_heads(&mut self) {
+        if self.absorbed_heads.is_empty() {
+            return;
+        }
         self.absorbed_heads.clear();
+        self.refresh_log_output();
     }
 
     //

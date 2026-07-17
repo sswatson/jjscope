@@ -718,15 +718,17 @@ impl<'a> LogTab<'a> {
             }
             LogTabEvent::Absorb => {
                 let absorbed = new_commander().run_absorb(self.head.commit_id.as_str())?;
-                self.set_head(new_commander().get_head_latest(&self.head)?);
 
                 let status_message = match absorbed.len() {
                     0 => "Nothing to absorb".to_owned(),
                     1 => "Absorbed into 1 revision".to_owned(),
                     n => format!("Absorbed into {n} revisions"),
                 };
+                // Set before set_head/refresh_log_output below, which bakes the
+                // absorbed-into glyph into the freshly fetched log text.
                 self.log_panel.absorbed_heads =
                     absorbed.into_iter().map(|head| head.change_id).collect();
+                self.set_head(new_commander().get_head_latest(&self.head)?);
 
                 return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
                     vec![
