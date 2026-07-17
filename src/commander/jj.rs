@@ -13,6 +13,7 @@ use crate::commander::CommandError;
 use crate::commander::Commander;
 use crate::commander::bookmarks::Bookmark;
 use crate::commander::ids::CommitId;
+use crate::commander::log::Head;
 
 impl Commander {
     /// Create a new change after revisions. Maps to `jj new <revision>...`
@@ -132,11 +133,30 @@ impl Commander {
     }
 
     /// Absorb a change's diff into its mutable ancestors. Maps to `jj absorb --from <revision>`
+    ///
+    /// Returns the ancestors that absorb rewrote, so callers can highlight them.
+    /// `jj absorb` doesn't offer structured output for this (its "Absorbed
+    /// changes into N revisions" summary is human-readable text on stderr), so
+    /// this snapshots the mutable ancestors of `revision` beforehand and, for
+    /// each one, checks afterwards whether its commit ID changed.
     #[instrument(level = "trace", skip(self))]
-    pub fn run_absorb(&self, revision: &str) -> Result<()> {
+    pub fn run_absorb(&self, revision: &str) -> Result<Vec<Head>> {
+        let before = self.get_mutable_ancestors(revision)?;
+
         self.jj(["absorb", "--from", revision])
             .run_void()
-            .context("Failed executing jj absorb")
+            .context("Failed executing jj absorb")?;
+
+        before
+            .into_iter()
+            .filter_map(|old_head| match self.get_change_head(&old_head.change_id) {
+                Ok(Some(new_head)) if new_head.commit_id != old_head.commit_id => {
+                    Some(Ok(new_head))
+                }
+                Ok(_) => None,
+                Err(err) => Some(Err(err)),
+            })
+            .collect()
     }
 
     /// Undo the last operation. Maps to `jj undo`
@@ -306,9 +326,71 @@ impl Commander {
 #[cfg(test)]
 mod tests {
     use core::slice;
+    use std::fs;
 
     use super::*;
     use crate::commander::tests::TestRepo;
+
+    #[test]
+    fn run_absorb() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let file = test_repo.directory.path().join("f.txt");
+
+        // commit A: parent of commit B. The unchanged middle line keeps the two
+        // edited lines in separate diff hunks, which absorb needs to split them
+        // to different destinations.
+        fs::write(&file, "a\nunchanged\nb\n")?;
+        let commit_a = test_repo.commander.get_current_head()?;
+        test_repo
+            .commander
+            .run_describe(commit_a.commit_id.as_str(), "commit A")?;
+
+        // commit B: on top of commit A
+        test_repo.commander.run_new(["@"])?;
+        fs::write(&file, "a\nunchanged\nb2\n")?;
+        let commit_b = test_repo.commander.get_current_head()?;
+        test_repo
+            .commander
+            .run_describe(commit_b.commit_id.as_str(), "commit B")?;
+
+        // Working copy on top of commit B, editing a line each commit introduced
+        test_repo.commander.run_new(["@"])?;
+        fs::write(&file, "a3\nunchanged\nb3\n")?;
+        let working_copy = test_repo.commander.get_current_head()?;
+
+        let absorbed = test_repo
+            .commander
+            .run_absorb(working_copy.commit_id.as_str())?;
+
+        let mut absorbed_change_ids: Vec<_> = absorbed
+            .iter()
+            .map(|head| head.change_id.as_str())
+            .collect();
+        absorbed_change_ids.sort();
+        let mut expected_change_ids =
+            vec![commit_a.change_id.as_str(), commit_b.change_id.as_str()];
+        expected_change_ids.sort();
+        assert_eq!(absorbed_change_ids, expected_change_ids);
+
+        // Each absorbed head's commit ID should have moved on from the pre-absorb one
+        for head in &absorbed {
+            assert!(head.commit_id != commit_a.commit_id && head.commit_id != commit_b.commit_id);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_absorb_nothing_to_absorb() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        let head = test_repo.commander.get_current_head()?;
+        let absorbed = test_repo.commander.run_absorb(head.commit_id.as_str())?;
+
+        assert!(absorbed.is_empty());
+
+        Ok(())
+    }
 
     #[test]
     fn run_new() -> Result<()> {

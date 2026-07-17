@@ -292,6 +292,31 @@ impl Commander {
                 .remove_end_line(),
         )
     }
+
+    /// Get the mutable ancestors of a revision, excluding the revision itself.
+    /// Maps to `jj log -r 'mutable() & ::<revision> ~ <revision>'`
+    ///
+    /// Used to snapshot the candidate set before an operation like `jj absorb`
+    /// that rewrites some of its ancestors, so the rewritten set can be found
+    /// afterwards by comparing commit IDs for each change ID (see
+    /// [Self::run_absorb][crate::commander::Commander::run_absorb]).
+    pub(crate) fn get_mutable_ancestors(&self, revision: &str) -> Result<Vec<Head>> {
+        self.execute_jj_log(
+            &format!("mutable() & ::{revision} ~ {revision}"),
+            HEAD_TEMPLATE_NL,
+        )
+        .context("Failed getting mutable ancestors")?
+        .lines()
+        .map(parse_head)
+        .collect()
+    }
+
+    /// Get the current head of a change, if it still exists.
+    /// Maps to `jj log -r 'change_id(<id>)'`
+    pub(crate) fn get_change_head(&self, change_id: &ChangeId) -> Result<Option<Head>> {
+        let result = self.execute_jj_log(&format!("change_id({change_id})"), HEAD_TEMPLATE_NL)?;
+        result.lines().map(parse_head).next().transpose()
+    }
 }
 
 #[cfg(test)]

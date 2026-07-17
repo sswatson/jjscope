@@ -14,6 +14,7 @@ use ratatui::text::ToText;
 use ratatui::widgets::*;
 
 use crate::commander::CommandError;
+use crate::commander::ids::ChangeId;
 use crate::commander::ids::CommitId;
 use crate::commander::log::Head;
 use crate::commander::log::LogOutput;
@@ -63,6 +64,12 @@ pub struct LogPanel<'a> {
     /// Currently marked commits
     pub marked_heads: HashSet<CommitId>,
 
+    /// Changes rewritten by the most recent `jj absorb`, shown with a distinct
+    /// highlight until the next keypress (mirrors how `App::status_message`
+    /// clears). Keyed by change ID rather than commit ID since absorb rewrites
+    /// the commit ID of every ancestor it touches.
+    pub absorbed_heads: HashSet<ChangeId>,
+
     /// When set, shown as the panel title instead of the usual "Log"/"Log for: <revset>" title
     pub title_override: Option<String>,
 
@@ -75,6 +82,7 @@ pub struct LogPanel<'a> {
 
 const LEFT_MARGIN_BLANK: char = ' ';
 const LEFT_MARGIN_MARKED: char = '>';
+const LEFT_MARGIN_ABSORBED: char = '*';
 
 /*
 pub enum LogPanelEvent {
@@ -139,6 +147,7 @@ impl<'a> LogPanel<'a> {
 
             head,
             marked_heads: HashSet::new(),
+            absorbed_heads: HashSet::new(),
             title_override: None,
 
             panel_rect: Rect::ZERO,
@@ -167,12 +176,11 @@ impl<'a> LogPanel<'a> {
     fn output_to_lines(&self, log_output: &LogOutput) -> Vec<Line<'a>> {
         // Add commit mark
         let add_mark = |line: &mut Line, i: usize| {
-            let at_marked_commit = log_output
-                .head_at(i)
-                .is_some_and(|head| self.is_head_marked(head));
-
-            let symbol = if at_marked_commit {
+            let head_at_line = log_output.head_at(i);
+            let symbol = if head_at_line.is_some_and(|head| self.is_head_marked(head)) {
                 LEFT_MARGIN_MARKED
+            } else if head_at_line.is_some_and(|head| self.is_head_absorbed(head)) {
+                LEFT_MARGIN_ABSORBED
             } else {
                 LEFT_MARGIN_BLANK
             };
@@ -199,6 +207,14 @@ impl<'a> LogPanel<'a> {
 
                 // Add padding at start
                 add_mark(&mut line, i);
+
+                // Highlight changes absorb just rewrote
+                if log_output
+                    .head_at(i)
+                    .is_some_and(|head| self.is_head_absorbed(head))
+                {
+                    set_bg(&mut line, Color::Yellow);
+                }
 
                 // Highlight lines that correspond to self.head
                 if log_output.head_at(i) == Some(&self.head) {
@@ -318,6 +334,20 @@ impl<'a> LogPanel<'a> {
     /// Extract the list of all marked heads and clear it
     pub fn extract_and_clear_head_marks(&mut self) -> Vec<CommitId> {
         self.marked_heads.drain().collect()
+    }
+
+    //
+    //  Absorbed heads
+    //
+
+    /// Check if a head was rewritten by the most recent `jj absorb`
+    pub fn is_head_absorbed(&self, head: &Head) -> bool {
+        self.absorbed_heads.contains(&head.change_id)
+    }
+
+    /// Clear the set of changes highlighted as absorbed into
+    pub fn clear_absorbed_heads(&mut self) {
+        self.absorbed_heads.clear();
     }
 
     //

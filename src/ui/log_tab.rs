@@ -717,10 +717,22 @@ impl<'a> LogTab<'a> {
                 return self.handle_abandon();
             }
             LogTabEvent::Absorb => {
-                new_commander().run_absorb(self.head.commit_id.as_str())?;
+                let absorbed = new_commander().run_absorb(self.head.commit_id.as_str())?;
                 self.set_head(new_commander().get_head_latest(&self.head)?);
-                return Ok(ComponentInputResult::HandledAction(AppAction::ChangeHead(
-                    self.head.clone(),
+
+                let status_message = match absorbed.len() {
+                    0 => "Nothing to absorb".to_owned(),
+                    1 => "Absorbed into 1 revision".to_owned(),
+                    n => format!("Absorbed into {n} revisions"),
+                };
+                self.log_panel.absorbed_heads =
+                    absorbed.into_iter().map(|head| head.change_id).collect();
+
+                return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+                    vec![
+                        AppAction::ChangeHead(self.head.clone()),
+                        AppAction::SetStatusMessage(status_message),
+                    ],
                 )));
             }
             LogTabEvent::Undo => {
@@ -1104,6 +1116,10 @@ impl Component for LogTab<'_> {
             if key.kind != KeyEventKind::Press {
                 return Ok(ComponentInputResult::Handled);
             }
+
+            // Clear the absorb highlight on the next keypress, mirroring how
+            // App::status_message clears (see LogTabEvent::Absorb).
+            self.log_panel.clear_absorbed_heads();
 
             if self.popup.is_opened() {
                 if matches!(
