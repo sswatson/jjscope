@@ -17,6 +17,7 @@ use tui_confirm_dialog::ConfirmDialog;
 use tui_confirm_dialog::ConfirmDialogState;
 use tui_confirm_dialog::Listener;
 
+use crate::commander::files::ConflictSide;
 use crate::commander::ids::CommitId;
 use crate::commander::log::Head;
 use crate::commander::new_commander;
@@ -36,6 +37,7 @@ use crate::ui::dialog::HelpPopup;
 use crate::ui::dialog::LoaderPopup;
 use crate::ui::dialog::MessagePopup;
 use crate::ui::dialog::RebasePopup;
+use crate::ui::dialog::RebasePopupExit;
 use crate::ui::panel::DetailsPanel;
 use crate::ui::panel::LargeStringContent;
 use crate::ui::panel::LogPanel;
@@ -50,6 +52,7 @@ const ABANDON_POPUP_ID: u16 = 3;
 const SQUASH_POPUP_ID: u16 = 4;
 const METAEDIT_UPDATE_CHANGE_ID_POPUP_ID: u16 = 5;
 const INSERT_POPUP_ID: u16 = 6;
+const RESOLVE_POPUP_ID: u16 = 7;
 
 /// State of the two-phase "insert between" flow, which collects `-A`/`-B` anchors for
 /// `jj new`/`jj rebase` by reusing the log panel's normal commit marking.
@@ -114,6 +117,8 @@ pub struct LogTab<'a> {
     edit_ignore_immutable: bool,
 
     metaedit_update_change_id_ignore_immutable: bool,
+
+    resolve_keep_destination: bool,
 
     insert_state: InsertState,
 
@@ -207,6 +212,8 @@ impl<'a> LogTab<'a> {
             edit_ignore_immutable: false,
 
             metaedit_update_change_id_ignore_immutable: false,
+
+            resolve_keep_destination: false,
 
             insert_state: InsertState::Idle,
 
@@ -552,6 +559,205 @@ impl<'a> LogTab<'a> {
         }
     }
 
+    /// Open the rebase popup: the selected change is the source, and the
+    /// marked changes are the destinations.
+    fn handle_rebase(&mut self) -> Result<ComponentInputResult> {
+        let message_popup = |title: &'static str, message: &'static str| {
+            Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                Some(Box::new(MessagePopup::new(title, message))),
+            )))
+        };
+
+        if self.log_panel.marked_heads.is_empty() {
+            return message_popup(
+                "Rebase",
+                "Mark the destination change(s) with space, then rebase the selected change.",
+            );
+        }
+        if self.head.immutable {
+            return message_popup(
+                "Rebase",
+                "The change cannot be rebased because it is immutable.",
+            );
+        }
+        if self.log_panel.is_head_marked(&self.head) {
+            return message_popup(
+                "Rebase",
+                "The selected change is one of the marked destinations.",
+            );
+        }
+
+        // Sort for a stable order, since mark storage is an unordered set
+        let mut targets: Vec<CommitId> = self.log_panel.marked_heads.iter().cloned().collect();
+        targets.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        self.rebase_popup = Some(RebasePopup::new(self.head.clone(), targets));
+        Ok(ComponentInputResult::Handled)
+    }
+
+    /// Ask for confirmation to squash the selected change into its parent,
+    /// or into the marked change if there is one.
+    fn handle_squash(&mut self, ignore_immutable: bool) -> Result<ComponentInputResult> {
+        let message_popup = |message: &'static str| {
+            Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                Some(Box::new(MessagePopup::new("Squash", message))),
+            )))
+        };
+
+        if self.log_panel.marked_heads.len() > 1 {
+            return message_popup("Squash supports at most one marked destination.");
+        }
+        if self.head.immutable && !ignore_immutable {
+            return message_popup("The change cannot be squashed because it is immutable.");
+        }
+
+        let mark = self.log_panel.marked_heads.iter().next().cloned();
+        let (target, into_parent) = match mark {
+            Some(mark) => {
+                if mark == self.head.commit_id {
+                    return message_popup("Cannot squash a change into itself.");
+                }
+                (new_commander().get_head(mark.as_str())?, false)
+            }
+            None => match new_commander().get_commit_parent(&self.head.commit_id) {
+                Ok(parent) => (parent, true),
+                Err(_) => return message_popup("The change has no parent to squash into."),
+            },
+        };
+        if target.immutable && !ignore_immutable {
+            return message_popup("Cannot squash into an immutable change.");
+        }
+
+        let description = if into_parent {
+            "Are you sure you want to squash this change into its parent?"
+        } else {
+            "Are you sure you want to squash this change into the marked change?"
+        };
+        let mut lines = vec![
+            Line::from(description),
+            Line::from(format!(
+                "Squash {} into {}",
+                self.head.change_id.as_str(),
+                target.change_id.as_str()
+            )),
+        ];
+        if ignore_immutable && (self.head.immutable || target.immutable) {
+            lines.push(Line::from("Immutability will be ignored."));
+        }
+        self.popup = ConfirmDialogState::new(
+            SQUASH_POPUP_ID,
+            Span::styled(" Squash ", Style::new().bold().cyan()),
+            Text::from(lines).fg(Color::default()),
+        );
+        self.popup
+            .with_yes_button(ButtonLabel::YES.clone())
+            .with_no_button(ButtonLabel::NO.clone())
+            .with_listener(Some(self.popup_tx.clone()))
+            .open();
+        self.squash_target = Some(target);
+        self.squash_ignore_immutable = ignore_immutable;
+        Ok(ComponentInputResult::Handled)
+    }
+
+    // Execute squash command, after self.popup returned
+    fn execute_squash(&mut self) -> Result<Option<AppAction>> {
+        let Some(target) = self.squash_target.take() else {
+            return Ok(None);
+        };
+        if let Err(err) = new_commander().run_squash_into(
+            self.head.commit_id.as_str(),
+            target.commit_id.as_str(),
+            self.squash_ignore_immutable,
+        ) {
+            return Ok(Some(AppAction::SetPopup(Some(Box::new(
+                MessagePopup::new("Squash", format!("{err:#}")),
+            )))));
+        }
+
+        // The marked destination (if any) was consumed
+        self.log_panel.extract_and_clear_head_marks();
+        // The squashed-into change was rewritten; follow it
+        self.set_head(new_commander().get_head_latest(&target)?);
+        Ok(Some(AppAction::ChangeHead(self.head.clone())))
+    }
+
+    fn handle_resolve(&mut self, keep_destination: bool) -> Result<ComponentInputResult> {
+        if self.head.immutable {
+            return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                Some(Box::new(MessagePopup::new(
+                    "Resolve",
+                    "The conflicts cannot be resolved because the change is immutable.",
+                ))),
+            )));
+        }
+
+        let conflicts = new_commander().get_conflicts(&self.head.commit_id)?;
+        if conflicts.is_empty() {
+            return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                Some(Box::new(MessagePopup::new(
+                    "Resolve",
+                    "The change has no conflicts to resolve.",
+                ))),
+            )));
+        }
+
+        let side = if keep_destination {
+            "the destination side (e.g. the rebase or squash destination)"
+        } else {
+            "the moved side (the rebased or squashed revision's version)"
+        };
+        let mut lines = vec![
+            Line::from(format!(
+                "Resolve {} conflicted file(s) in favor of {side}?",
+                conflicts.len()
+            )),
+            Line::from(format!("Change: {}", self.head.change_id.as_str())),
+        ];
+        const MAX_LISTED_CONFLICTS: usize = 8;
+        for conflict in conflicts.iter().take(MAX_LISTED_CONFLICTS) {
+            lines.push(Line::from(format!("  {}", conflict.path)));
+        }
+        if conflicts.len() > MAX_LISTED_CONFLICTS {
+            lines.push(Line::from(format!(
+                "  ...and {} more",
+                conflicts.len() - MAX_LISTED_CONFLICTS
+            )));
+        }
+
+        self.popup = ConfirmDialogState::new(
+            RESOLVE_POPUP_ID,
+            Span::styled(" Resolve ", Style::new().bold().cyan()),
+            Text::from(lines).fg(Color::default()),
+        );
+        self.popup
+            .with_yes_button(ButtonLabel::YES.clone())
+            .with_no_button(ButtonLabel::NO.clone())
+            .with_listener(Some(self.popup_tx.clone()))
+            .open();
+        self.resolve_keep_destination = keep_destination;
+        Ok(ComponentInputResult::Handled)
+    }
+
+    // Execute resolve command, after self.popup returned
+    fn execute_resolve(&mut self) -> Result<Option<AppAction>> {
+        let side = if self.resolve_keep_destination {
+            ConflictSide::Destination
+        } else {
+            ConflictSide::Source
+        };
+        if let Err(err) = new_commander().run_resolve(self.head.commit_id.as_str(), None, side) {
+            return Ok(Some(AppAction::SetPopup(Some(Box::new(
+                MessagePopup::new("Resolve", err.to_string()),
+            )))));
+        }
+
+        self.set_head(new_commander().get_head_latest(&self.head)?);
+        Ok(Some(AppAction::Multiple(vec![
+            AppAction::ChangeHead(self.head.clone()),
+            AppAction::SetStatusMessage("Resolved conflicts | u: undo".to_owned()),
+        ])))
+    }
+
     fn handle_event(&mut self, log_tab_event: LogTabEvent) -> Result<ComponentInputResult> {
         match log_tab_event {
             LogTabEvent::ScrollDown
@@ -592,67 +798,10 @@ impl<'a> LogTab<'a> {
                 self.start_insert(Some(moving));
             }
             LogTabEvent::Rebase => {
-                let source_change = new_commander().get_current_head()?;
-                let target_change = &self.head;
-                self.rebase_popup = Some(RebasePopup::new(
-                    source_change.clone(),
-                    target_change.clone(),
-                ));
+                return self.handle_rebase();
             }
             LogTabEvent::Squash { ignore_immutable } => {
-                let current_head = new_commander().get_current_head()?;
-                let target = if self.head.change_id == current_head.change_id {
-                    match new_commander().get_commit_parent(&current_head.commit_id) {
-                        Ok(parent) => {
-                            self.squash_target = Some(parent.clone());
-                            parent
-                        }
-                        Err(_) => {
-                            return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
-                                Some(Box::new(MessagePopup::new(
-                                    "Squash",
-                                    "Cannot squash onto current change",
-                                ))),
-                            )));
-                        }
-                    }
-                } else {
-                    self.squash_target = None;
-                    self.head.clone()
-                };
-
-                if target.immutable && !ignore_immutable {
-                    return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
-                        Some(Box::new(MessagePopup::new(
-                            "Squash",
-                            "Cannot squash onto immutable change",
-                        ))),
-                    )));
-                }
-
-                let description = if self.squash_target.is_some() {
-                    "Are you sure you want to squash @ into its parent?"
-                } else {
-                    "Are you sure you want to squash @ into this change?"
-                };
-                let mut lines = vec![
-                    Line::from(description),
-                    Line::from(format!("Squash into {}", target.change_id.as_str())),
-                ];
-                if ignore_immutable {
-                    lines.push(Line::from("This change is immutable."));
-                }
-                self.popup = ConfirmDialogState::new(
-                    SQUASH_POPUP_ID,
-                    Span::styled(" Squash ", Style::new().bold().cyan()),
-                    Text::from(lines).fg(Color::default()),
-                );
-                self.popup
-                    .with_yes_button(ButtonLabel::YES.clone())
-                    .with_no_button(ButtonLabel::NO.clone())
-                    .with_listener(Some(self.popup_tx.clone()))
-                    .open();
-                self.squash_ignore_immutable = ignore_immutable;
+                return self.handle_squash(ignore_immutable);
             }
             LogTabEvent::EditChange { ignore_immutable } => {
                 if self.head.immutable && !ignore_immutable {
@@ -716,18 +865,38 @@ impl<'a> LogTab<'a> {
             LogTabEvent::Abandon => {
                 return self.handle_abandon();
             }
+            LogTabEvent::ResolveConflicts { keep_destination } => {
+                return self.handle_resolve(keep_destination);
+            }
             LogTabEvent::Absorb => {
-                let absorbed = new_commander().run_absorb(self.head.commit_id.as_str())?;
+                let outcome = new_commander().run_absorb(self.head.commit_id.as_str())?;
 
-                let status_message = match absorbed.len() {
-                    0 => "Nothing to absorb".to_owned(),
-                    1 => "Absorbed into 1 revision".to_owned(),
-                    n => format!("Absorbed into {n} revisions"),
+                let status_message = if outcome.absorbed.is_empty() {
+                    "Nothing to absorb".to_owned()
+                } else {
+                    let mut message = match outcome.absorbed.len() {
+                        1 => "Absorbed into 1 revision (★)".to_owned(),
+                        n => format!("Absorbed into {n} revisions (★)"),
+                    };
+                    match outcome.rebased.len() {
+                        0 => {}
+                        1 => message.push_str(", rebased 1 other (☆)"),
+                        m => message.push_str(&format!(", rebased {m} others (☆)")),
+                    }
+                    message
                 };
                 // Set before set_head/refresh_log_output below, which bakes the
-                // absorbed-into glyph into the freshly fetched log text.
-                self.log_panel.absorbed_heads =
-                    absorbed.into_iter().map(|head| head.change_id).collect();
+                // absorb glyphs into the freshly fetched log text.
+                self.log_panel.absorbed_heads = outcome
+                    .absorbed
+                    .into_iter()
+                    .map(|head| head.change_id)
+                    .collect();
+                self.log_panel.rebased_heads = outcome
+                    .rebased
+                    .into_iter()
+                    .map(|head| head.change_id)
+                    .collect();
                 self.set_head(new_commander().get_head_latest(&self.head)?);
 
                 return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
@@ -905,17 +1074,13 @@ impl Component for LogTab<'_> {
                     return self.execute_abandon();
                 }
                 SQUASH_POPUP_ID => {
-                    let target_id = self
-                        .squash_target
-                        .take()
-                        .unwrap_or_else(|| self.head.clone())
-                        .commit_id;
-                    new_commander().run_squash(target_id.as_str(), self.squash_ignore_immutable)?;
-                    self.set_head(new_commander().get_current_head()?);
-                    return Ok(Some(AppAction::ChangeHead(self.head.clone())));
+                    return self.execute_squash();
                 }
                 INSERT_POPUP_ID => {
                     return self.execute_insert();
+                }
+                RESOLVE_POPUP_ID => {
+                    return self.execute_resolve();
                 }
                 _ => {}
             }
@@ -1095,22 +1260,33 @@ impl Component for LogTab<'_> {
         }
 
         if let Some(rebase_popup) = &mut self.rebase_popup {
-            let handled = rebase_popup.handle_input(event.clone());
-            if handled.is_err() {
-                // Close popup and show error message
-                self.rebase_popup = None;
-                let msg = handled.err().unwrap();
-                return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
-                    Some(Box::new(MessagePopup::new("Error", msg.to_string()))),
-                )));
+            match rebase_popup.handle_input(event.clone()) {
+                Err(msg) => {
+                    // Close popup and show error message
+                    self.rebase_popup = None;
+                    return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                        Some(Box::new(MessagePopup::new("Error", format!("{msg:#}")))),
+                    )));
+                }
+                Ok(RebasePopupExit::Executed) => {
+                    self.rebase_popup = None;
+                    // The marked destinations were consumed
+                    self.log_panel.extract_and_clear_head_marks();
+                    // The rebased change was rewritten; follow it
+                    self.set_head(new_commander().get_head_latest(&self.head)?);
+                    return Ok(ComponentInputResult::HandledAction(AppAction::ChangeHead(
+                        self.head.clone(),
+                    )));
+                }
+                Ok(RebasePopupExit::Cancelled) => {
+                    // Marks are kept, so the rebase can be retried
+                    self.rebase_popup = None;
+                    return Ok(ComponentInputResult::Handled);
+                }
+                Ok(RebasePopupExit::KeepOpen) => {
+                    return Ok(ComponentInputResult::Handled);
+                }
             }
-            if handled.ok() == Some(true) {
-                // when handle_input returns true,
-                // the popup should be closed
-                self.rebase_popup = None;
-                return Ok(ComponentInputResult::HandledAction(AppAction::RefreshTab()));
-            }
-            return Ok(ComponentInputResult::Handled);
         }
 
         if let Event::Key(key) = &event {

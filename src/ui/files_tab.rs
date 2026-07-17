@@ -11,6 +11,7 @@ use tracing::instrument;
 
 use crate::commander::CommandError;
 use crate::commander::files::Conflict;
+use crate::commander::files::ConflictSide;
 use crate::commander::files::File;
 use crate::commander::log::Head;
 use crate::commander::new_commander;
@@ -170,6 +171,48 @@ impl FilesTab {
             .map(|current_file| new_commander().restore_file(current_file))
             .transpose()?;
         Ok(())
+    }
+
+    /// Resolve the selected file's conflict by keeping one side wholesale.
+    /// Returns a popup action on failure, `None` on success.
+    fn resolve_file(&mut self, side: ConflictSide) -> Result<Option<AppAction>> {
+        let popup = |title: &'static str, message: String| {
+            Some(AppAction::SetPopup(Some(Box::new(MessagePopup::new(
+                title, message,
+            )))))
+        };
+
+        if self.head.immutable {
+            return Ok(popup(
+                "Resolve",
+                "The conflict cannot be resolved because the change is immutable.".to_owned(),
+            ));
+        }
+        let Some(path) = self.file.as_ref().and_then(|file| file.path.clone()) else {
+            return Ok(None);
+        };
+        if !self
+            .conflicts_output
+            .iter()
+            .any(|conflict| conflict.path == path)
+        {
+            return Ok(popup(
+                "Resolve",
+                "The selected file has no conflict to resolve.".to_owned(),
+            ));
+        }
+
+        if let Err(err) =
+            new_commander().run_resolve(self.head.commit_id.as_str(), Some(&path), side)
+        {
+            return Ok(popup("Resolve", err.to_string()));
+        }
+
+        // Resolving rewrote the commit, so re-find the head before refreshing
+        self.head = new_commander().get_head_latest(&self.head)?;
+        self.refresh_files()?;
+        self.refresh_diff()?;
+        Ok(None)
     }
 
     fn scroll_files(&mut self, scroll: isize) -> Result<()> {
@@ -374,6 +417,16 @@ impl Component for FilesTab {
                     }
                     self.set_head(&new_commander().get_current_head()?)?;
                 }
+                KeyCode::Char('v') => {
+                    if let Some(action) = self.resolve_file(ConflictSide::Source)? {
+                        return Ok(ComponentInputResult::HandledAction(action));
+                    }
+                }
+                KeyCode::Char('V') => {
+                    if let Some(action) = self.resolve_file(ConflictSide::Destination)? {
+                        return Ok(ComponentInputResult::HandledAction(action));
+                    }
+                }
                 KeyCode::Char('R') | KeyCode::F(5) => {
                     self.head = new_commander().get_head_latest(&self.head)?;
                     self.refresh_files()?;
@@ -391,6 +444,16 @@ impl Component for FilesTab {
                                 ("J/K".to_owned(), "scroll down by ½ page".to_owned()),
                                 ("x".to_owned(), "untrack file".to_owned()),
                                 ("r".to_owned(), "restore file".to_owned()),
+                                (
+                                    "v".to_owned(),
+                                    "resolve conflict keeping the rebased/squashed revision's version"
+                                        .to_owned(),
+                                ),
+                                (
+                                    "V".to_owned(),
+                                    "resolve conflict keeping the rebase/squash destination's version"
+                                        .to_owned(),
+                                ),
                                 ("@".to_owned(), "view current change files".to_owned()),
                             ],
                             vec![

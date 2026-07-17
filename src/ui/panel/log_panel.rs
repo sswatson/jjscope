@@ -64,11 +64,17 @@ pub struct LogPanel<'a> {
     /// Currently marked commits
     pub marked_heads: HashSet<CommitId>,
 
-    /// Changes rewritten by the most recent `jj absorb`, shown with a distinct
-    /// highlight until the next keypress (mirrors how `App::status_message`
-    /// clears). Keyed by change ID rather than commit ID since absorb rewrites
-    /// the commit ID of every ancestor it touches.
+    /// Changes the most recent `jj absorb` moved hunks into, shown with a
+    /// distinct node glyph ([NODE_ABSORBED]) until the next keypress (mirrors
+    /// how `App::status_message` clears). Keyed by change ID rather than
+    /// commit ID since absorb rewrites the commit ID of every revision it
+    /// touches.
     pub absorbed_heads: HashSet<ChangeId>,
+
+    /// Changes the most recent `jj absorb` rewrote only by rebasing them on
+    /// top of an absorbed-into revision, shown with [NODE_REBASED]. Cleared
+    /// together with [Self::absorbed_heads].
+    pub rebased_heads: HashSet<ChangeId>,
 
     /// When set, shown as the panel title instead of the usual "Log"/"Log for: <revset>" title
     pub title_override: Option<String>,
@@ -82,8 +88,12 @@ pub struct LogPanel<'a> {
 
 /// Node glyph shown in place of jj's usual node (`@`/`○`/`◆`/...) for a marked commit.
 const NODE_MARKED: char = '✓';
-/// Node glyph shown in place of jj's usual node for a commit `jj absorb` just rewrote.
+/// Node glyph shown in place of jj's usual node for a commit `jj absorb` just
+/// moved hunks into.
 const NODE_ABSORBED: char = '★';
+/// Node glyph shown in place of jj's usual node for a commit `jj absorb`
+/// rewrote only by rebasing it (no hunks moved into it).
+const NODE_REBASED: char = '☆';
 
 /*
 pub enum LogPanelEvent {
@@ -149,6 +159,7 @@ impl<'a> LogPanel<'a> {
             head,
             marked_heads: HashSet::new(),
             absorbed_heads: HashSet::new(),
+            rebased_heads: HashSet::new(),
             title_override: None,
 
             panel_rect: Rect::ZERO,
@@ -165,9 +176,11 @@ impl<'a> LogPanel<'a> {
     pub fn refresh_log_output(&mut self) {
         let marked_ids: Vec<&str> = self.marked_heads.iter().map(CommitId::as_str).collect();
         let absorbed_ids: Vec<&str> = self.absorbed_heads.iter().map(ChangeId::as_str).collect();
+        let rebased_ids: Vec<&str> = self.rebased_heads.iter().map(ChangeId::as_str).collect();
         let node_overrides = [
             (NODE_MARKED, marked_ids.as_slice()),
             (NODE_ABSORBED, absorbed_ids.as_slice()),
+            (NODE_REBASED, rebased_ids.as_slice()),
         ];
 
         self.log_output = new_commander().get_log(&self.log_revset, &node_overrides);
@@ -204,14 +217,6 @@ impl<'a> LogPanel<'a> {
             .enumerate()
             .map(|(i, line)| {
                 let mut line = line.to_owned();
-
-                // Highlight changes absorb just rewrote
-                if log_output
-                    .head_at(i)
-                    .is_some_and(|head| self.is_head_absorbed(head))
-                {
-                    set_bg(&mut line, Color::Yellow);
-                }
 
                 // Highlight lines that correspond to self.head
                 if log_output.head_at(i) == Some(&self.head) {
@@ -348,20 +353,16 @@ impl<'a> LogPanel<'a> {
     //  Absorbed heads
     //
 
-    /// Check if a head was rewritten by the most recent `jj absorb`
-    pub fn is_head_absorbed(&self, head: &Head) -> bool {
-        self.absorbed_heads.contains(&head.change_id)
-    }
-
     /// Clear the set of changes highlighted as absorbed into
     ///
     /// Refreshes immediately, for the same reason [Self::set_head_mark] does:
     /// the highlight glyph is baked into the fetched log text.
     pub fn clear_absorbed_heads(&mut self) {
-        if self.absorbed_heads.is_empty() {
+        if self.absorbed_heads.is_empty() && self.rebased_heads.is_empty() {
             return;
         }
         self.absorbed_heads.clear();
+        self.rebased_heads.clear();
         self.refresh_log_output();
     }
 

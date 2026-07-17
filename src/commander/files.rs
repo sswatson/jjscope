@@ -38,6 +38,25 @@ pub struct Conflict {
     pub path: String,
 }
 
+/// Which side of a conflict [Commander::run_resolve] keeps.
+///
+/// jj's built-in `:ours`/`:theirs` merge tools keep side #1 or side #2 of a
+/// conflict. jj orders the sides by the roles in the operation that
+/// introduced the conflict (rebase, squash, or the automatic rebase of
+/// descendants when an ancestor is rewritten): side #1 is the operation's
+/// destination and side #2 is the revision that was moved. These match the
+/// labels jj prints in conflict markers, e.g. "rebase destination" vs
+/// "rebased revision", or "squash destination" vs "squashed revision".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictSide {
+    /// Keep the moved revision's content, i.e. the rebased or squashed
+    /// revision (side #2, `:theirs`).
+    Source,
+    /// Keep the destination's content, e.g. the rebase or squash destination
+    /// (side #1, `:ours`).
+    Destination,
+}
+
 impl DiffType {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
@@ -120,6 +139,39 @@ impl Commander {
             }
             Err(err) => Err(err).context("Failed getting conflicts"),
         }
+    }
+
+    /// Resolve conflicts in a revision by keeping one side wholesale.
+    /// Maps to `jj resolve -r <revision> --tool :ours|:theirs [<fileset>]`
+    ///
+    /// With no `path`, every conflicted file in the revision is resolved.
+    /// Each conflicted file takes the chosen side's *entire* content — jj's
+    /// built-in `:ours`/`:theirs` tools resolve whole files, so changes from
+    /// the discarded side are dropped even where they would have merged
+    /// cleanly.
+    #[instrument(level = "trace", skip(self))]
+    pub fn run_resolve(
+        &self,
+        revision: &str,
+        path: Option<&str>,
+        side: ConflictSide,
+    ) -> Result<(), CommandError> {
+        let tool = match side {
+            ConflictSide::Source => ":theirs",
+            ConflictSide::Destination => ":ours",
+        };
+        let mut args = vec![
+            "resolve".to_owned(),
+            "-r".to_owned(),
+            revision.to_owned(),
+            "--tool".to_owned(),
+            tool.to_owned(),
+        ];
+        if let Some(path) = path {
+            args.push(Self::get_file_revset(path));
+        }
+
+        self.jj(args).run_void()
     }
 
     /// Get diff for file change in a change.
@@ -396,6 +448,190 @@ mod tests {
                 true
             )?);
         }
+
+        Ok(())
+    }
+
+    // Build a repo where a rebase left the working copy conflicted: two
+    // siblings both edit README's first line ("AAA" on the destination side,
+    // "BBB" on the rebased side, from a common "base" version), then the
+    // "BBB" change is rebased onto the "AAA" change. The rebased side also
+    // appends an "extra" line that would merge cleanly on its own, to pin
+    // down that resolution takes the whole file from the chosen side.
+    fn make_conflicted_repo() -> Result<TestRepo> {
+        let test_repo = TestRepo::new()?;
+        let file_path = test_repo.directory.path().join("README");
+
+        fs::write(&file_path, b"base\ncommon\n")?;
+        let head0 = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_new([head0.commit_id.as_str()])?;
+        let head1 = test_repo.commander.get_current_head()?;
+        fs::write(&file_path, b"AAA\ncommon\n")?;
+
+        test_repo.commander.run_new([head0.commit_id.as_str()])?;
+        let head2 = test_repo.commander.get_current_head()?;
+        fs::write(&file_path, b"BBB\ncommon\nextra\n")?;
+
+        test_repo
+            .commander
+            .jj([
+                "rebase",
+                "-s",
+                head2.change_id.as_str(),
+                "-d",
+                head1.change_id.as_str(),
+            ])
+            .run_void()?;
+
+        Ok(test_repo)
+    }
+
+    fn readme_content(test_repo: &TestRepo, revision: &str) -> Result<String> {
+        Ok(test_repo
+            .commander
+            .jj(["file", "show", "-r", revision, "README"])
+            .run()?)
+    }
+
+    #[test]
+    fn run_resolve_keep_source() -> Result<()> {
+        let test_repo = make_conflicted_repo()?;
+        let head = test_repo.commander.get_current_head()?;
+        assert!(
+            !test_repo
+                .commander
+                .get_conflicts(&head.commit_id)?
+                .is_empty()
+        );
+
+        test_repo
+            .commander
+            .run_resolve(head.commit_id.as_str(), None, ConflictSide::Source)?;
+
+        let head = test_repo.commander.get_current_head()?;
+        assert_eq!(test_repo.commander.get_conflicts(&head.commit_id)?, []);
+        // The rebased revision's own content wins
+        assert_eq!(
+            readme_content(&test_repo, head.commit_id.as_str())?,
+            "BBB\ncommon\nextra\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_resolve_keep_destination() -> Result<()> {
+        let test_repo = make_conflicted_repo()?;
+        let head = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_resolve(
+            head.commit_id.as_str(),
+            None,
+            ConflictSide::Destination,
+        )?;
+
+        let head = test_repo.commander.get_current_head()?;
+        assert_eq!(test_repo.commander.get_conflicts(&head.commit_id)?, []);
+        // The rebase destination's whole file wins: the rebased side's
+        // "extra" line is dropped even though it would have merged cleanly
+        assert_eq!(
+            readme_content(&test_repo, head.commit_id.as_str())?,
+            "AAA\ncommon\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_resolve_single_file() -> Result<()> {
+        let test_repo = make_conflicted_repo()?;
+        let head = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_resolve(
+            head.commit_id.as_str(),
+            Some("README"),
+            ConflictSide::Source,
+        )?;
+
+        let head = test_repo.commander.get_current_head()?;
+        assert_eq!(test_repo.commander.get_conflicts(&head.commit_id)?, []);
+        assert_eq!(
+            readme_content(&test_repo, head.commit_id.as_str())?,
+            "BBB\ncommon\nextra\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_resolve_squash_conflict_sides() -> Result<()> {
+        // jj orders conflict sides by operation role, not by which revision
+        // holds the conflict: in a squash-introduced conflict, side #1 is the
+        // squash destination's old content (the conflicted revision itself!)
+        // and side #2 is the squashed revision's. Pin that
+        // [ConflictSide::Source] means "the moved revision" here too.
+        let test_repo = TestRepo::new()?;
+        let file_path = test_repo.directory.path().join("README");
+
+        fs::write(&file_path, b"base")?;
+        let head0 = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_new([head0.commit_id.as_str()])?;
+        fs::write(&file_path, b"Y-version")?;
+        let dest = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_new([head0.commit_id.as_str()])?;
+        fs::write(&file_path, b"X-version")?;
+        let source = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_squash_into(
+            source.commit_id.as_str(),
+            dest.commit_id.as_str(),
+            false,
+        )?;
+
+        let dest = test_repo
+            .commander
+            .get_change_head(&dest.change_id)?
+            .expect("squash destination should still exist");
+        assert!(
+            !test_repo
+                .commander
+                .get_conflicts(&dest.commit_id)?
+                .is_empty()
+        );
+
+        test_repo
+            .commander
+            .run_resolve(dest.commit_id.as_str(), None, ConflictSide::Source)?;
+
+        let dest = test_repo
+            .commander
+            .get_change_head(&dest.change_id)?
+            .expect("squash destination should still exist");
+        assert_eq!(test_repo.commander.get_conflicts(&dest.commit_id)?, []);
+        // The squashed (moved) revision's version wins, NOT the conflicted
+        // revision's own old content
+        assert_eq!(
+            readme_content(&test_repo, dest.commit_id.as_str())?,
+            "X-version"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_resolve_no_conflicts() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let head = test_repo.commander.get_current_head()?;
+
+        let result =
+            test_repo
+                .commander
+                .run_resolve(head.commit_id.as_str(), None, ConflictSide::Source);
+
+        assert!(result.is_err());
 
         Ok(())
     }

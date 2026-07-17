@@ -1,16 +1,17 @@
 /*! The rebase popup allows the user to pick a rebase configuration and
  start rebase, or cancel the opreation.
 
- The UI looks like this
+ The source is the change selected in the log panel; the targets are the
+ marked changes. The UI looks like this
  ~~~
-    Source   (zsztoxlv)
+    Source zsztoxlv 093ab72d
     ( ) -s this and descendants
     ( ) -b whole branch
     (*) -r only one change moves
-    Target @ (umrpslui)
-    (*) -d rebase onto @ as new branch
-    ( ) -A rebase after @
-    ( ) -B rebase before @
+    Target umrpslui 45a99ab4
+    (*) -d rebase onto target as new branch
+    ( ) -A rebase after target
+    ( ) -B rebase before target
 
     Esc: Cancel    Enter: Rebase
 ~~~
@@ -40,6 +41,7 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::StatefulWidget;
 
+use crate::commander::ids::CommitId;
 use crate::commander::log::Head;
 use crate::commander::new_commander;
 use crate::keybinds::rebase_popup::CutOption;
@@ -51,23 +53,35 @@ use crate::ui::utils::centered_rect_fixed;
 
 type Keybinds = crate::keybinds::rebase_popup::Keybinds;
 
+/// How the rebase popup was closed, so the caller knows whether the marked
+/// changes were consumed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RebasePopupExit {
+    /// The popup handled the input and stays open.
+    KeepOpen,
+    /// The popup was dismissed without rebasing.
+    Cancelled,
+    /// The rebase ran.
+    Executed,
+}
+
 /// A transient popup for configuring a rebase command
 pub struct RebasePopup {
     pub keybinds: Keybinds,
 
     pub source_rev: Head,
-    pub target_rev: Head,
+    pub target_revs: Vec<CommitId>,
 
     pub source_mode: CutOption,
     pub target_mode: PasteOption,
 }
 
 impl RebasePopup {
-    pub fn new(source_rev: Head, target_rev: Head) -> Self {
+    pub fn new(source_rev: Head, target_revs: Vec<CommitId>) -> Self {
         Self {
             keybinds: Keybinds::default(),
             source_rev,
-            target_rev,
+            target_revs,
             source_mode: CutOption::SingleRevision,
             target_mode: PasteOption::NewBranch,
         }
@@ -93,7 +107,6 @@ impl RebasePopup {
     /// Run the command that the popup is currently configured to do
     fn run_command(&self) -> Result<()> {
         let src_rev = self.source_rev.commit_id.as_str();
-        let tgt_rev = self.target_rev.commit_id.as_str();
         let src_mode = match self.source_mode {
             CutOption::IncludeDescendants => "-s",
             CutOption::IncludeBranch => "-b",
@@ -104,28 +117,27 @@ impl RebasePopup {
             PasteOption::InsertAfter => "-A",
             PasteOption::InsertBefore => "-B",
         };
-        new_commander().run_rebase(src_mode, src_rev, tgt_mode, tgt_rev)?;
+        new_commander().run_rebase(src_mode, src_rev, tgt_mode, &self.target_revs)?;
         Ok(())
     }
 
-    /// Process the input event. If this function returns Ok(true),
-    /// then the popup should be closed. Either a rebase was executed
-    /// or the operation was cancelled.
-    /// If the result is Ok(false) the function did handle
-    /// the input, but the popup should not be closed yet.
+    /// Process the input event. On [RebasePopupExit::Cancelled] or
+    /// [RebasePopupExit::Executed] the popup should be closed; on
+    /// [RebasePopupExit::KeepOpen] the input was handled (possibly changing a
+    /// radio button) and the popup stays up.
     /// Err(_) will be returned if the jj command failed.
-    pub fn handle_input(&mut self, event: Event) -> Result<bool> {
+    pub fn handle_input(&mut self, event: Event) -> Result<RebasePopupExit> {
         match self.match_event(event) {
             PopupAction::Ok => {
                 self.run_command()?;
-                return Ok(true);
+                return Ok(RebasePopupExit::Executed);
             }
-            PopupAction::Cancel => return Ok(true),
+            PopupAction::Cancel => return Ok(RebasePopupExit::Cancelled),
             PopupAction::SetSourceMode(m) => self.source_mode = m,
             PopupAction::SetTargetMode(m) => self.target_mode = m,
             PopupAction::None => (),
         }
-        Ok(false)
+        Ok(RebasePopupExit::KeepOpen)
     }
 }
 
@@ -173,16 +185,19 @@ impl Component for RebasePopup {
             CutOption::SingleRevision => 2,
         };
         frame.render_widget(
-            Paragraph::new(Span::raw(format!(
-                "Source @ {src_change_id} {src_commit_id}"
-            ))),
+            Paragraph::new(Span::raw(format!("Source {src_change_id} {src_commit_id}"))),
             chunks[0],
         );
         frame.render_stateful_widget(RadioButton::new(src_options), chunks[1], &mut src_select);
 
         // Radio buttons for target
-        let tgt_change_id: String = self.target_rev.change_id.as_str().chars().take(8).collect();
-        let tgt_commit_id: String = self.target_rev.commit_id.as_str().chars().take(8).collect();
+        let target_label = match self.target_revs.as_slice() {
+            [single] => {
+                let commit_id: String = single.as_str().chars().take(8).collect();
+                format!("Target {commit_id}")
+            }
+            targets => format!("Target {} marked changes", targets.len()),
+        };
         let tgt_options = vec![
             "-d rebase as new branch",
             "-A rebase after",
@@ -193,10 +208,7 @@ impl Component for RebasePopup {
             PasteOption::InsertAfter => 1,
             PasteOption::InsertBefore => 2,
         };
-        frame.render_widget(
-            Paragraph::new(Span::raw(format!("Target {tgt_change_id} {tgt_commit_id}"))),
-            chunks[2],
-        );
+        frame.render_widget(Paragraph::new(Span::raw(target_label)), chunks[2]);
         frame.render_stateful_widget(RadioButton::new(tgt_options), chunks[3], &mut tgt_select);
 
         // Help on terminating dialog

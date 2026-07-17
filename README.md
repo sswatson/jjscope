@@ -21,7 +21,7 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - See different revset with `r`
   - Set a bookmark to selected change with `b`
   - Fetch/push with `f`/`p`
-  - Squash current changes to selected change with `s`/`S`
+  - Squash selected change into its parent (or the marked change) with `s`/`S`
   - Yank change ID/revision to the system clipboard with `y`/`Y`
 - Files
   - View files in current change and diff in side panel
@@ -110,6 +110,14 @@ See all key mappings for the current tab with `?`.
   - Edit highlighted change ignoring immutability with `E` (`jj edit --ignore-immutable`)
 - Abandon a change with `a` (`jj abandon`)
 - Absorb the highlighted change's diff into its mutable ancestors with `A` (`jj absorb --from`)
+  - Until the next keypress, the log marks the revisions that actually received hunks with `★`
+    and the revisions that were only rebased as a consequence with `☆`
+- Resolve all conflicts in the highlighted change with `v`/`V` (`jj resolve --tool :theirs`/`:ours`)
+  - `v` keeps the version from the revision that was moved by the conflict-introducing operation
+    (labeled "rebased revision" or "squashed revision" in jj's conflict markers)
+  - `V` keeps the version from the operation's destination (labeled "rebase destination" or
+    "squash destination")
+  - Each conflicted file takes the chosen side's entire content, i.e. exactly what that side had for the file before the conflict
 - Generate a new change id for the highlighted change with `c` (`jj metaedit --update-change-id`), useful for resolving divergence
   - Generate a new change id ignoring immutability with `C` (`jj metaedit --update-change-id --ignore-immutable`)
 - Describe the highlighted change with `d` (`jj describe`)
@@ -119,8 +127,12 @@ See all key mappings for the current tab with `?`.
   - Scroll in bookmark list with `j`/`k`
   - Create a new bookmark with `c`
   - Use auto-generated name with `g`
-- Squash current changes (in @) to the selected change with `s` (`jj squash`)
-  - Squash current changes to the selected change ignoring immutability with `S` (`jj squash --ignore-immutable`)
+- Squash the highlighted change into its parent with `s` (`jj squash --from --into`)
+  - If a change is marked (with `Space`), the highlighted change is squashed into the marked change instead
+  - Squash ignoring immutability with `S` (`jj squash --ignore-immutable`)
+- Rebase the highlighted change onto the marked change(s) with `Ctrl+r` (`jj rebase`)
+  - Mark the destination(s) with `Space` first; marking several destinations rebases onto their merge
+  - The popup offers `-r`/`-s`/`-b` for what moves and `-d`/`-A`/`-B` for where it lands
 - Git fetch with `f` (`jj git fetch`)
   - Git fetch all remotes with `F` (`jj git fetch --all-remotes`)
 - Git push with `p` (`jj git push`)
@@ -129,6 +141,8 @@ See all key mappings for the current tab with `?`.
 ### Files tab
 
 - Select current change with `@`
+- Resolve the selected file's conflict with `v`/`V` (`jj resolve --tool :theirs`/`:ours`)
+  - `v` keeps the rebased/squashed revision's version; `V` keeps the rebase/squash destination's version
 - Change details panel diff format between color words (default) and Git (and diff tool if set) with `w`
 - Toggle details panel wrapping with `W`
 

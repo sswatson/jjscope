@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- Log tab: squash (`s`/`S`) and rebase (`Ctrl+r`) now operate on the *selected* change,
+  like every other command, instead of moving `@`. Squash sends the selected change into
+  its parent, or into the marked change if one is marked. Rebase moves the selected change
+  onto the marked change(s) — mark the destination(s) with `Space` first; multiple marks
+  rebase onto their merge. The old "squash @ into the selected change" is now: mark the
+  destination with `Space`, jump to @ with `@`, then `s`
 - The keybinds config section is now kebab-cased: `[blazingjj.keybinds.log_tab]` must be
   changed to `[blazingjj.keybinds.log-tab]`
 - Fork project and change name from "blazingjj" to "jjscope": the binary, crate, config
@@ -19,7 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Keybinding for jj absorb (`A`)
+- Log tab: resolve all conflicts in the selected change with `v`/`V`
+  (`jj resolve --tool :theirs`/`:ours`); files tab: same per-file. `v` keeps the
+  rebased/squashed revision's version of each conflicted file, `V` keeps the
+  rebase/squash destination's version
+- Keybinding for jj absorb (`A`). After absorbing, the log temporarily marks
+  the revisions that received hunks with `★` and the revisions that were only
+  rebased along (including on sibling branches) with `☆`
 - Top-level scroll keybindings (`scroll-down`, `scroll-up`, `scroll-down-half`,
   `scroll-up-half` under `[blazingjj.keybinds]`) that apply as defaults to all
   scroll-capable components and can be overridden per-component

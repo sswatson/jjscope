@@ -303,6 +303,18 @@ impl Commander {
         );
     }
 
+    /// Get the head for a revision.
+    /// Maps to `jj log -r <revision>`
+    #[instrument(level = "trace", skip(self))]
+    pub fn get_head(&self, revision: &str) -> Result<Head> {
+        parse_head(
+            &self
+                .execute_jj_log_one(revision, HEAD_TEMPLATE_NL)
+                .with_context(|| format!("Failed getting head: {revision}"))?
+                .remove_end_line(),
+        )
+    }
+
     /// Get a commit's parent.
     /// Maps to `jj log -r <revision>-`
     #[instrument(level = "trace", skip(self))]
@@ -348,26 +360,25 @@ impl Commander {
         )
     }
 
-    /// Get the mutable ancestors of a revision, excluding the revision itself.
-    /// Maps to `jj log -r 'mutable() & ::<revision> ~ <revision>'`
+    /// Get all mutable revisions. Maps to `jj log -r 'mutable()'`
     ///
     /// Used to snapshot the candidate set before an operation like `jj absorb`
-    /// that rewrites some of its ancestors, so the rewritten set can be found
-    /// afterwards by comparing commit IDs for each change ID (see
-    /// [Self::run_absorb][crate::commander::Commander::run_absorb]).
-    pub(crate) fn get_mutable_ancestors(&self, revision: &str) -> Result<Vec<Head>> {
-        self.execute_jj_log(
-            &format!("mutable() & ::{revision} ~ {revision}"),
-            HEAD_TEMPLATE_NL,
-        )
-        .context("Failed getting mutable ancestors")?
-        .lines()
-        .map(parse_head)
-        .collect()
+    /// that rewrites revisions, so the rewritten set can be found afterwards
+    /// by comparing commit IDs for each change ID (see
+    /// [Self::run_absorb][crate::commander::Commander::run_absorb]). The set
+    /// covers the whole mutable graph rather than just ancestors, since
+    /// rebase propagation also rewrites descendants on sibling branches.
+    pub(crate) fn get_mutable_heads(&self) -> Result<Vec<Head>> {
+        self.execute_jj_log("mutable()", HEAD_TEMPLATE_NL)
+            .context("Failed getting mutable revisions")?
+            .lines()
+            .map(parse_head)
+            .collect()
     }
 
     /// Get the current head of a change, if it still exists.
     /// Maps to `jj log -r 'change_id(<id>)'`
+    #[cfg_attr(not(test), expect(dead_code, reason = "currently only used by tests"))]
     pub(crate) fn get_change_head(&self, change_id: &ChangeId) -> Result<Option<Head>> {
         let result = self.execute_jj_log(&format!("change_id({change_id})"), HEAD_TEMPLATE_NL)?;
         result.lines().map(parse_head).next().transpose()
@@ -411,9 +422,7 @@ mod tests {
         let head = test_repo.commander.get_current_head()?;
         let commit_id = head.commit_id.as_str();
 
-        let log = test_repo
-            .commander
-            .get_log(&None, &[('X', &[commit_id])])?;
+        let log = test_repo.commander.get_log(&None, &[('X', &[commit_id])])?;
 
         assert!(log.graph.lines().next().unwrap().starts_with('X'));
 
@@ -430,7 +439,9 @@ mod tests {
 
         let root_head = test_repo.commander.get_current_head()?;
         fs::write(test_repo.directory.path().join("f.txt"), b"A")?;
-        test_repo.commander.run_new([root_head.commit_id.as_str()])?;
+        test_repo
+            .commander
+            .run_new([root_head.commit_id.as_str()])?;
         let middle_head = test_repo.commander.get_current_head()?;
         fs::write(test_repo.directory.path().join("f.txt"), b"B")?;
         test_repo

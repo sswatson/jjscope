@@ -254,7 +254,7 @@ impl JjCommand<'_> {
 
     /// Execute the command and return its standard output.
     pub fn run(self) -> Result<String, CommandError> {
-        let stdout = self.execute(Stdio::piped())?;
+        let (stdout, _stderr) = self.execute(Stdio::piped())?;
         Ok(String::from_utf8(stdout)?)
     }
 
@@ -267,12 +267,22 @@ impl JjCommand<'_> {
         Ok(())
     }
 
-    /// Configure and run the command, returning the captured standard output.
+    /// Execute the command and return its standard error, where jj prints
+    /// its informational messages. Implies [Self::verbose], since `--quiet`
+    /// (the default) suppresses exactly those messages. Color stays off so
+    /// the output is safe to parse.
+    pub fn run_stderr(self) -> Result<String, CommandError> {
+        let (_stdout, stderr) = self.verbose().execute(Stdio::null())?;
+        Ok(String::from_utf8(stderr)?)
+    }
+
+    /// Configure and run the command, returning the captured standard output
+    /// and standard error.
     ///
     /// `stdout` selects how the child's standard output is handled: piped to
     /// be captured and returned, or null to be discarded. Standard error is
     /// always captured so it can be surfaced on failure.
-    fn execute(self, stdout: Stdio) -> Result<Vec<u8>, CommandError> {
+    fn execute(self, stdout: Stdio) -> Result<(Vec<u8>, Vec<u8>), CommandError> {
         let mut command = Command::new(&self.commander.env.jj_bin);
         command.args(&self.args);
         command.args(get_output_args(
@@ -323,7 +333,7 @@ impl JjCommand<'_> {
             ));
         }
 
-        Ok(output.stdout)
+        Ok((output.stdout, output.stderr))
     }
 }
 

@@ -20,3 +20,4 @@ pub use help::HelpPopup;
 pub use loader::LoaderPopup;
 pub use message::MessagePopup;
 pub use rebase::RebasePopup;
+pub use rebase::RebasePopupExit;

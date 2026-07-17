@@ -5,6 +5,8 @@ The module implementes a number of jj commands.
 Surprisingly, this module also contains jj bookmark commands.
 These functions are used everywhere (bookmark tab, log tab).
 */
+use std::collections::HashMap;
+
 use anyhow::Context;
 use anyhow::Result;
 use tracing::instrument;
@@ -12,8 +14,34 @@ use tracing::instrument;
 use crate::commander::CommandError;
 use crate::commander::Commander;
 use crate::commander::bookmarks::Bookmark;
+use crate::commander::ids::ChangeId;
 use crate::commander::ids::CommitId;
 use crate::commander::log::Head;
+
+/// The revisions `jj absorb` rewrote, split by why they were rewritten.
+#[derive(Debug, Default)]
+pub struct AbsorbOutcome {
+    /// Revisions that actually received absorbed hunks.
+    pub absorbed: Vec<Head>,
+    /// Revisions rewritten only because they descend from an absorbed
+    /// revision and were rebased along with it.
+    pub rebased: Vec<Head>,
+}
+
+/// Parse the change ID prefixes out of `jj absorb`'s "Absorbed changes into
+/// N revisions:" stderr listing, whose entries look like
+/// `  wnzmyvwk b9a3db4b commit-A`. Returns an empty list if the message
+/// isn't present (nothing was absorbed, or a future jj changed the wording).
+fn parse_absorb_destinations(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .skip_while(|line| !line.starts_with("Absorbed changes into"))
+        .skip(1)
+        .map_while(|line| line.strip_prefix("  "))
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+        .collect()
+}
 
 impl Commander {
     /// Create a new change after revisions. Maps to `jj new <revision>...`
@@ -105,24 +133,35 @@ impl Commander {
             .context("Failed executing jj describe")
     }
 
-    /// Rebase changes. Maps to `jj rebase -s <rev> -d <rev>` or similar
+    /// Rebase changes. Maps to `jj rebase -s <rev> -d <rev>...` or similar
+    ///
+    /// Multiple targets are all passed with the same `tgt_mode` flag; with
+    /// `-d` that rebases the source onto a merge of the targets.
     #[instrument(level = "trace", skip(self))]
     pub fn run_rebase(
         &self,
         src_mode: &str,
         src_rev: &str,
         tgt_mode: &str,
-        tgt_rev: &str,
+        tgt_revs: &[CommitId],
     ) -> Result<()> {
-        Ok(self
-            .jj(["rebase", src_mode, src_rev, tgt_mode, tgt_rev])
-            .run_void()?)
+        let mut args = vec!["rebase", src_mode, src_rev];
+        for tgt_rev in tgt_revs {
+            args.push(tgt_mode);
+            args.push(tgt_rev.as_str());
+        }
+
+        Ok(self.jj(args).run_void()?)
     }
 
-    /// Squash changes. Maps to `jj squash -u --into <revision>`
+    /// Squash a whole change into another change.
+    /// Maps to `jj squash -u --from <revision> --into <revision>`
+    ///
+    /// `-u` keeps the destination's description, since jj's default of
+    /// combining the two descriptions would open an editor.
     #[instrument(level = "trace", skip(self))]
-    pub fn run_squash(&self, revision: &str, ignore_immutable: bool) -> Result<()> {
-        let mut args = vec!["squash", "-u", "--into", revision];
+    pub fn run_squash_into(&self, from: &str, into: &str, ignore_immutable: bool) -> Result<()> {
+        let mut args = vec!["squash", "-u", "--from", from, "--into", into];
         if ignore_immutable {
             args.push("--ignore-immutable");
         }
@@ -134,29 +173,58 @@ impl Commander {
 
     /// Absorb a change's diff into its mutable ancestors. Maps to `jj absorb --from <revision>`
     ///
-    /// Returns the ancestors that absorb rewrote, so callers can highlight them.
-    /// `jj absorb` doesn't offer structured output for this (its "Absorbed
-    /// changes into N revisions" summary is human-readable text on stderr), so
-    /// this snapshots the mutable ancestors of `revision` beforehand and, for
-    /// each one, checks afterwards whether its commit ID changed.
+    /// Returns the rewritten revisions split into the ones that actually
+    /// received hunks and the ones that were only rebased along, so callers
+    /// can highlight them differently. The destinations come from absorb's
+    /// "Absorbed changes into N revisions:" stderr listing; the full
+    /// rewritten set is found by snapshotting all mutable revisions
+    /// beforehand and comparing each change's commit ID afterwards (this
+    /// includes descendants on sibling branches, which rebase propagation
+    /// also rewrites). `revision` itself is excluded — it always gets
+    /// rewritten, by having its diff carved out.
     #[instrument(level = "trace", skip(self))]
-    pub fn run_absorb(&self, revision: &str) -> Result<Vec<Head>> {
-        let before = self.get_mutable_ancestors(revision)?;
+    pub fn run_absorb(&self, revision: &str) -> Result<AbsorbOutcome> {
+        let before = self.get_mutable_heads()?;
 
-        self.jj(["absorb", "--from", revision])
-            .run_void()
+        let stderr = self
+            .jj(["absorb", "--from", revision])
+            .run_stderr()
             .context("Failed executing jj absorb")?;
+        let destinations = parse_absorb_destinations(&stderr);
 
-        before
+        let after: HashMap<ChangeId, Head> = self
+            .get_mutable_heads()?
             .into_iter()
-            .filter_map(|old_head| match self.get_change_head(&old_head.change_id) {
-                Ok(Some(new_head)) if new_head.commit_id != old_head.commit_id => {
-                    Some(Ok(new_head))
+            .map(|head| (head.change_id.clone(), head))
+            .collect();
+
+        let rewritten: Vec<Head> = before
+            .iter()
+            .filter(|old_head| old_head.commit_id.as_str() != revision)
+            .filter_map(|old_head| match after.get(&old_head.change_id) {
+                Some(new_head) if new_head.commit_id != old_head.commit_id => {
+                    Some(new_head.clone())
                 }
-                Ok(_) => None,
-                Err(err) => Some(Err(err)),
+                _ => None,
             })
-            .collect()
+            .collect();
+
+        // If revisions were rewritten but the destination listing couldn't be
+        // parsed (e.g. a future jj changed the wording), don't guess at a
+        // split: report everything as absorbed, matching the old behavior.
+        if !rewritten.is_empty() && destinations.is_empty() {
+            return Ok(AbsorbOutcome {
+                absorbed: rewritten,
+                rebased: vec![],
+            });
+        }
+
+        let (absorbed, rebased) = rewritten.into_iter().partition(|head| {
+            destinations
+                .iter()
+                .any(|prefix| head.change_id.as_str().starts_with(prefix.as_str()))
+        });
+        Ok(AbsorbOutcome { absorbed, rebased })
     }
 
     /// Undo the last operation. Maps to `jj undo`
@@ -358,11 +426,12 @@ mod tests {
         fs::write(&file, "a3\nunchanged\nb3\n")?;
         let working_copy = test_repo.commander.get_current_head()?;
 
-        let absorbed = test_repo
+        let outcome = test_repo
             .commander
             .run_absorb(working_copy.commit_id.as_str())?;
 
-        let mut absorbed_change_ids: Vec<_> = absorbed
+        let mut absorbed_change_ids: Vec<_> = outcome
+            .absorbed
             .iter()
             .map(|head| head.change_id.as_str())
             .collect();
@@ -372,8 +441,11 @@ mod tests {
         expected_change_ids.sort();
         assert_eq!(absorbed_change_ids, expected_change_ids);
 
+        // Both rewritten commits received hunks, so nothing was rebased-only
+        assert!(outcome.rebased.is_empty());
+
         // Each absorbed head's commit ID should have moved on from the pre-absorb one
-        for head in &absorbed {
+        for head in &outcome.absorbed {
             assert!(head.commit_id != commit_a.commit_id && head.commit_id != commit_b.commit_id);
         }
 
@@ -381,13 +453,92 @@ mod tests {
     }
 
     #[test]
+    fn run_absorb_split_absorbed_from_rebased() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let file_a = test_repo.directory.path().join("a.txt");
+
+        // commit A: introduces a.txt (the only absorb destination).
+        // Describe before capturing the head: describing rewrites the
+        // commit, which would leave a captured commit ID stale (hidden).
+        fs::write(&file_a, "a\n")?;
+        test_repo.commander.run_describe("@", "commit A")?;
+        let commit_a = test_repo.commander.get_current_head()?;
+
+        // commit B: on top of A, touches only b.txt, so it can't absorb
+        // anything but gets rebased when A is rewritten
+        test_repo.commander.run_new(["@"])?;
+        fs::write(test_repo.directory.path().join("b.txt"), "b\n")?;
+        test_repo.commander.run_describe("@", "commit B")?;
+        let commit_b = test_repo.commander.get_current_head()?;
+
+        // commit S: sibling branch off A; also rebased when A is rewritten,
+        // even though it isn't an ancestor of the working copy
+        test_repo.commander.run_new([commit_a.commit_id.as_str()])?;
+        fs::write(test_repo.directory.path().join("s.txt"), "s\n")?;
+        test_repo.commander.run_describe("@", "commit S")?;
+        let commit_s = test_repo.commander.get_current_head()?;
+
+        // Working copy on top of B, editing the line A introduced
+        test_repo.commander.run_new([commit_b.commit_id.as_str()])?;
+        fs::write(&file_a, "a2\n")?;
+        let working_copy = test_repo.commander.get_current_head()?;
+
+        let outcome = test_repo
+            .commander
+            .run_absorb(working_copy.commit_id.as_str())?;
+
+        let absorbed_change_ids: Vec<_> = outcome
+            .absorbed
+            .iter()
+            .map(|head| head.change_id.as_str())
+            .collect();
+        assert_eq!(absorbed_change_ids, vec![commit_a.change_id.as_str()]);
+
+        let mut rebased_change_ids: Vec<_> = outcome
+            .rebased
+            .iter()
+            .map(|head| head.change_id.as_str())
+            .collect();
+        rebased_change_ids.sort();
+        let mut expected_rebased = vec![commit_b.change_id.as_str(), commit_s.change_id.as_str()];
+        expected_rebased.sort();
+        assert_eq!(rebased_change_ids, expected_rebased);
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_absorb_destinations_listing() {
+        let stderr = "\
+Absorbed changes into 2 revisions:
+  qpvuntsm 90e5407c commit A
+  kntqzsqt 4c30963b commit B
+Rebased 1 descendant commits.
+Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
+";
+        assert_eq!(
+            parse_absorb_destinations(stderr),
+            vec!["qpvuntsm".to_owned(), "kntqzsqt".to_owned()]
+        );
+    }
+
+    #[test]
+    fn parse_absorb_destinations_nothing() {
+        assert_eq!(
+            parse_absorb_destinations("Nothing changed.\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn run_absorb_nothing_to_absorb() -> Result<()> {
         let test_repo = TestRepo::new()?;
 
         let head = test_repo.commander.get_current_head()?;
-        let absorbed = test_repo.commander.run_absorb(head.commit_id.as_str())?;
+        let outcome = test_repo.commander.run_absorb(head.commit_id.as_str())?;
 
-        assert!(absorbed.is_empty());
+        assert!(outcome.absorbed.is_empty());
+        assert!(outcome.rebased.is_empty());
 
         Ok(())
     }
@@ -432,6 +583,79 @@ mod tests {
 
         test_repo.commander.run_redo()?;
         assert_eq!(new_head, test_repo.commander.get_current_head()?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_squash_into_parent() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let file = test_repo.directory.path().join("f.txt");
+
+        let parent = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new(["@"])?;
+        fs::write(&file, "child content")?;
+        let child = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_squash_into(
+            child.commit_id.as_str(),
+            parent.commit_id.as_str(),
+            false,
+        )?;
+
+        // The parent picked up the child's content...
+        let parent = test_repo
+            .commander
+            .get_change_head(&parent.change_id)?
+            .expect("squash destination should still exist");
+        let content = test_repo
+            .commander
+            .jj(["file", "show", "-r", parent.commit_id.as_str(), "f.txt"])
+            .run()?;
+        assert_eq!(content, "child content");
+
+        // ...and the now-empty child was abandoned
+        assert_eq!(test_repo.commander.get_change_head(&child.change_id)?, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_rebase_multiple_destinations() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        let base = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let head_a = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let head_b = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let moved = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_rebase(
+            "-r",
+            moved.commit_id.as_str(),
+            "-d",
+            &[head_a.commit_id.clone(), head_b.commit_id.clone()],
+        )?;
+
+        // The rebased change became a merge of both destinations
+        let parents = test_repo
+            .commander
+            .jj([
+                "log",
+                "--no-graph",
+                "-T",
+                r#"commit_id ++ "\n""#,
+                "-r",
+                &format!("{}-", moved.change_id.as_str()),
+            ])
+            .run()?;
+        let mut parents: Vec<&str> = parents.lines().collect();
+        parents.sort();
+        let mut expected = vec![head_a.commit_id.as_str(), head_b.commit_id.as_str()];
+        expected.sort();
+        assert_eq!(parents, expected);
 
         Ok(())
     }
