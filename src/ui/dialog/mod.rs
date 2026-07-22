@@ -12,12 +12,9 @@ mod command;
 mod help;
 mod loader;
 mod message;
-mod rebase;
 
 pub use bookmark_set::BookmarkSetPopup;
 pub use command::CommandPopup;
 pub use help::HelpPopup;
 pub use loader::LoaderPopup;
 pub use message::MessagePopup;
-pub use rebase::RebasePopup;
-pub use rebase::RebasePopupExit;

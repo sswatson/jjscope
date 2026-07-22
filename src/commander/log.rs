@@ -315,6 +315,25 @@ impl Commander {
         )
     }
 
+    /// Get all of a commit's parents, in parent order.
+    /// Maps to `jj log -r <revision> -T 'parents.map(|p| p.commit_id())...'`
+    ///
+    /// The template goes through the commit's own parent list rather than the
+    /// `<revision>-` revset, whose output order is topological, not parent
+    /// order.
+    pub(crate) fn get_commit_parents(&self, commit_id: &CommitId) -> Result<Vec<CommitId>> {
+        Ok(self
+            .execute_jj_log_one(
+                commit_id.as_str(),
+                r#"parents.map(|p| p.commit_id()).join("\n") ++ "\n""#,
+            )
+            .with_context(|| format!("Failed getting commit parents: {commit_id}"))?
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| CommitId(line.to_owned()))
+            .collect())
+    }
+
     /// Get a commit's parent.
     /// Maps to `jj log -r <revision>-`
     #[instrument(level = "trace", skip(self))]
@@ -536,6 +555,28 @@ mod tests {
         assert_ne!(old_head, new_head);
 
         assert_eq!(new_head, test_repo.commander.get_head_latest(&old_head)?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_commit_parents() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        let base = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let left = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let right = test_repo.commander.get_current_head()?;
+
+        // Merge with (left, right) as parents, in that order
+        test_repo
+            .commander
+            .run_new([left.commit_id.as_str(), right.commit_id.as_str()])?;
+        let merge = test_repo.commander.get_current_head()?;
+
+        let parents = test_repo.commander.get_commit_parents(&merge.commit_id)?;
+        assert_eq!(parents, [left.commit_id, right.commit_id]);
 
         Ok(())
     }

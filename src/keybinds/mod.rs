@@ -15,7 +15,6 @@ mod config;
 mod keybinds_store;
 mod log_tab;
 mod message_popup;
-pub mod rebase_popup;
 
 /*#[derive(Debug)]
 pub struct Keybinds {
@@ -141,13 +140,7 @@ impl FromStr for Shortcut {
 
 impl Display for Shortcut {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut parts = Vec::with_capacity(3);
-        if self.modifiers.contains(KeyModifiers::CONTROL) {
-            parts.push("Control".to_string());
-        }
-        if self.modifiers.contains(KeyModifiers::SHIFT) {
-            parts.push("Shift".to_string());
-        }
+        let mut modifiers = self.modifiers;
         let k = match self.key {
             KeyCode::Enter => "Enter".to_string(),
             KeyCode::Left => "Left".to_string(),
@@ -157,10 +150,27 @@ impl Display for Shortcut {
             KeyCode::PageDown => "PageDown".to_string(),
             KeyCode::PageUp => "PageUp".to_string(),
             KeyCode::F(n) => format!("F{n}"),
-            KeyCode::Char(c) => c.to_string(),
+            KeyCode::Char(' ') => "Space".to_string(),
+            KeyCode::Char(c) => {
+                // Shift+letter reads better as just the capital letter
+                if modifiers.contains(KeyModifiers::SHIFT) && c.is_alphabetic() {
+                    modifiers.remove(KeyModifiers::SHIFT);
+                    c.to_uppercase().to_string()
+                } else {
+                    c.to_string()
+                }
+            }
             KeyCode::Esc => "Esc".to_string(),
             _ => "Unknown".to_string(),
         };
+
+        let mut parts = Vec::with_capacity(3);
+        if modifiers.contains(KeyModifiers::CONTROL) {
+            parts.push("Ctrl".to_string());
+        }
+        if modifiers.contains(KeyModifiers::SHIFT) {
+            parts.push("Shift".to_string());
+        }
         parts.push(k);
 
         parts.join("+").fmt(f)

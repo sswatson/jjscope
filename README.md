@@ -136,14 +136,22 @@ See all key mappings for the current tab with `?`.
   (or the highlighted one), then pick the destination and press `Enter`
   - The cursor starts on the parent, so `s` then `Enter` squashes into the parent (like bare `jj squash`)
   - Squash ignoring immutability with `S` (`jj squash --ignore-immutable`)
-- Rebase changes with `Ctrl+r` (`jj rebase`): press `Ctrl+r` to pick up the marked changes
-  (or the highlighted one), then pick the destination(s) and press `Enter`
-  - Marking several destinations rebases onto their merge
-  - The popup offers `-r`/`-s`/`-b` for what moves and `-d`/`-A`/`-B` for where it lands
+- Rebase changes with `r` (`jj rebase -r`/`-s`): press `r` to pick up the marked changes
+  (or the highlighted one), then edit the parent set and press `Enter`
+  - The picked-up change's current parents appear marked with `✚`; `Space` toggles any
+    change in or out of the parent set, so parents can be added and removed in one go
+    (e.g. adding/dropping branches from a megamerge)
+  - If the parent set is left untouched, `Enter` rebases onto the highlighted change
+    instead — the plain "move it there" gesture
+  - Press `r` again during the gesture to toggle whether descendants come along
+    (`jj rebase -s` vs `-r`); the title shows which mode is active
+- Rebase a whole branch with `B` (`jj rebase -b`): pick up a change on the branch, press
+  `B`, then pick the destination(s) and press `Enter`
+  - Which commits get new parents (the branch roots) depends on the destination, so
+    there is no parent set to edit here — it's a plain destination pick
 - Git fetch with `f` (`jj git fetch`)
   - Git fetch all remotes with `F` (`jj git fetch --all-remotes`)
 - Git push with `p` (`jj git push`)
-  - Git push all bookmarks with `P` (`jj git push --all`)
 
 ### Files tab
 

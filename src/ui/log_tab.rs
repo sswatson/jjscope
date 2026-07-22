@@ -36,8 +36,6 @@ use crate::ui::dialog::BookmarkSetPopup;
 use crate::ui::dialog::HelpPopup;
 use crate::ui::dialog::LoaderPopup;
 use crate::ui::dialog::MessagePopup;
-use crate::ui::dialog::RebasePopup;
-use crate::ui::dialog::RebasePopupExit;
 use crate::ui::panel::DetailsPanel;
 use crate::ui::panel::LargeStringContent;
 use crate::ui::panel::LogPanel;
@@ -65,9 +63,25 @@ const RESOLVE_POPUP_ID: u16 = 7;
 enum PickState {
     /// No gesture in progress.
     Idle,
-    /// After the rebase key: collecting the destination(s). Multiple
-    /// destinations rebase `sources` onto their merge.
-    RebaseDestinations { sources: Vec<CommitId> },
+    /// After the rebase key: the marks are the candidate parent set, shown
+    /// with a distinctive glyph. For a single source they are pre-seeded
+    /// with its current parents (`original_parents`), so toggling marks
+    /// adds/removes parents relative to today. On Enter the marks become
+    /// the destinations — unless they are exactly `original_parents` still
+    /// (a no-op rebase nobody wants), in which case the change under the
+    /// cursor is the destination, preserving the plain "move it there"
+    /// gesture. Pressing the rebase key again toggles whether descendants
+    /// come along (`jj rebase -s` vs `-r`).
+    RebaseDestinations {
+        sources: Vec<CommitId>,
+        original_parents: Vec<CommitId>,
+        include_descendants: bool,
+    },
+    /// After the branch-rebase key: collecting the destination(s) for
+    /// `jj rebase -b`. No parent set can be shown here: which commits get
+    /// new parents (the branch roots) is itself a function of the
+    /// destination, so this stays a plain destination pick.
+    BranchRebaseDestinations { sources: Vec<CommitId> },
     /// After the squash key: collecting the single destination. On entry the
     /// cursor is placed on the source's parent, so an immediate Enter gives
     /// `jj squash` semantics.
@@ -120,11 +134,6 @@ pub struct LogTab<'a> {
 
     describe_textarea: Option<TextArea<'a>>,
     describe_after_new: bool,
-
-    rebase_popup: Option<RebasePopup>,
-    /// The first picked-up rebase source, resolved before the rebase rewrites
-    /// it, so the selection can follow the moved change afterwards.
-    rebase_follow: Option<Head>,
 
     edit_ignore_immutable: bool,
 
@@ -215,9 +224,6 @@ impl<'a> LogTab<'a> {
 
             describe_textarea: None,
             describe_after_new: false,
-
-            rebase_popup: None,
-            rebase_follow: None,
 
             edit_ignore_immutable: false,
 
@@ -401,11 +407,80 @@ impl<'a> LogTab<'a> {
         )))
     }
 
-    /// Pick up change(s) to rebase; the destinations are picked next.
-    fn start_rebase(&mut self) {
+    /// Pick up change(s) to rebase; the parent set is edited next. For a
+    /// single source, its current parents are pre-seeded as marks so that
+    /// toggling a mark visibly adds/removes a future parent edge.
+    fn start_rebase(&mut self) -> Result<()> {
         let sources = self.take_picked_commits();
-        self.pick_state = PickState::RebaseDestinations { sources };
+
+        let mut original_parents = Vec::new();
+        if let [source] = sources.as_slice() {
+            original_parents = new_commander().get_commit_parents(source)?;
+        }
+        self.log_panel.marked_heads = original_parents.iter().cloned().collect();
+        self.log_panel.marks_are_parents = true;
+
+        self.pick_state = PickState::RebaseDestinations {
+            sources,
+            original_parents,
+            include_descendants: false,
+        };
         self.update_pick_title();
+        // Bake the parent glyphs into the graph
+        self.refresh_log_output();
+        Ok(())
+    }
+
+    /// Toggle whether the rebase gesture brings descendants along
+    /// (`jj rebase -s` vs `-r`).
+    fn toggle_rebase_descendants(&mut self) {
+        if let PickState::RebaseDestinations {
+            include_descendants,
+            ..
+        } = &mut self.pick_state
+        {
+            *include_descendants = !*include_descendants;
+            self.update_pick_title();
+        }
+    }
+
+    /// Pick up change(s) whose whole branch should be rebased; the
+    /// destination(s) are picked next (`jj rebase -b`).
+    fn start_branch_rebase(&mut self) {
+        let sources = self.take_picked_commits();
+        self.log_panel.marks_are_parents = true;
+        self.pick_state = PickState::BranchRebaseDestinations { sources };
+        self.update_pick_title();
+    }
+
+    /// Rebase `sources` onto `targets` with the given source mode, following
+    /// the first source with the cursor afterwards.
+    fn execute_rebase(
+        &mut self,
+        src_mode: &str,
+        sources: Vec<CommitId>,
+        targets: Vec<CommitId>,
+    ) -> Result<ComponentInputResult> {
+        // Resolve the first source before the rebase rewrites it, so the
+        // cursor can follow the moved change afterwards
+        let follow = sources
+            .first()
+            .and_then(|source| new_commander().get_head(source.as_str()).ok());
+
+        if let Err(err) = new_commander().run_rebase(src_mode, &sources, "-d", &targets) {
+            return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                Some(Box::new(MessagePopup::new("Rebase", format!("{err:#}")))),
+            )));
+        }
+
+        let follow = follow.unwrap_or_else(|| self.head.clone());
+        self.set_head(new_commander().get_head_latest(&follow)?);
+        Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+            vec![
+                AppAction::ChangeHead(self.head.clone()),
+                AppAction::SetStatusMessage("Rebased | u: undo".to_owned()),
+            ],
+        )))
     }
 
     /// Pick up change(s) to squash; the destination is picked next, with the
@@ -488,15 +563,31 @@ impl<'a> LogTab<'a> {
 
     fn cancel_pick(&mut self) {
         self.log_panel.extract_and_clear_head_marks();
+        self.log_panel.marks_are_parents = false;
         self.pick_state = PickState::Idle;
         self.log_panel.title_override = None;
+        // Un-bake any mark glyphs from the graph
+        self.refresh_log_output();
     }
 
     fn update_pick_title(&mut self) {
         let hint = match &self.pick_state {
             PickState::Idle => None,
-            PickState::RebaseDestinations { .. } => Some(
-                " Rebase: pick destination(s) (space: mark several, enter: confirm, esc: cancel) "
+            PickState::RebaseDestinations {
+                include_descendants,
+                ..
+            } => {
+                let what_moves = if *include_descendants {
+                    "+ descendants"
+                } else {
+                    "this change"
+                };
+                Some(format!(
+                    " Rebase [{what_moves}] (r: switch): space toggles parents (✚); enter: apply, or onto cursor if untouched; esc: cancel "
+                ))
+            }
+            PickState::BranchRebaseDestinations { .. } => Some(
+                " Branch rebase: pick destination(s) (space: mark several, enter: apply, esc: cancel) "
                     .to_owned(),
             ),
             PickState::SquashDestination { .. } => {
@@ -525,7 +616,56 @@ impl<'a> LogTab<'a> {
     fn advance_pick(&mut self) -> Result<ComponentInputResult> {
         match self.pick_state.clone() {
             PickState::Idle => Ok(ComponentInputResult::Handled),
-            PickState::RebaseDestinations { sources } => {
+            PickState::RebaseDestinations {
+                sources,
+                original_parents,
+                include_descendants,
+            } => {
+                // The marks are the edited parent set. Don't consume them
+                // yet: validation failures keep the phase (and glyphs) alive.
+                let marks = &self.log_panel.marked_heads;
+                let unchanged = marks.len() == original_parents.len()
+                    && original_parents.iter().all(|parent| marks.contains(parent));
+
+                let targets: Vec<CommitId> = if unchanged {
+                    // No-op parent edit; fall back to the plain "move it
+                    // onto the cursor" gesture
+                    vec![self.head.commit_id.clone()]
+                } else {
+                    // Surviving parents keep their original order; newly
+                    // added ones follow (sorted — mark storage is unordered)
+                    let mut added: Vec<CommitId> = marks
+                        .iter()
+                        .filter(|mark| !original_parents.contains(mark))
+                        .cloned()
+                        .collect();
+                    added.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+                    original_parents
+                        .iter()
+                        .filter(|parent| marks.contains(parent))
+                        .cloned()
+                        .chain(added)
+                        .collect()
+                };
+
+                if targets.is_empty() {
+                    return Self::message_popup("Rebase", "The parent set cannot be empty.");
+                }
+                if targets.iter().any(|target| sources.contains(target)) {
+                    return Self::message_popup(
+                        "Rebase",
+                        "A picked-up change cannot become its own parent.",
+                    );
+                }
+
+                self.log_panel.extract_and_clear_head_marks();
+                self.log_panel.marks_are_parents = false;
+                self.pick_state = PickState::Idle;
+                self.log_panel.title_override = None;
+                let src_mode = if include_descendants { "-s" } else { "-r" };
+                self.execute_rebase(src_mode, sources, targets)
+            }
+            PickState::BranchRebaseDestinations { sources } => {
                 let targets = self.take_picked_commits();
                 if targets.iter().any(|target| sources.contains(target)) {
                     return Self::message_popup(
@@ -533,15 +673,10 @@ impl<'a> LogTab<'a> {
                         "The destination is one of the picked-up changes.",
                     );
                 }
+                self.log_panel.marks_are_parents = false;
                 self.pick_state = PickState::Idle;
                 self.log_panel.title_override = None;
-                // Resolve the first source before the rebase rewrites it, so
-                // the selection can follow the moved change afterwards
-                self.rebase_follow = sources
-                    .first()
-                    .and_then(|source| new_commander().get_head(source.as_str()).ok());
-                self.rebase_popup = Some(RebasePopup::new(sources, targets));
-                Ok(ComponentInputResult::Handled)
+                self.execute_rebase("-b", sources, targets)
             }
             PickState::SquashDestination {
                 sources,
@@ -798,7 +933,10 @@ impl<'a> LogTab<'a> {
                 return self.start_insert_move();
             }
             LogTabEvent::Rebase => {
-                self.start_rebase();
+                self.start_rebase()?;
+            }
+            LogTabEvent::RebaseBranch => {
+                self.start_branch_rebase();
             }
             LogTabEvent::Squash { ignore_immutable } => {
                 self.start_squash(ignore_immutable);
@@ -939,9 +1077,7 @@ impl<'a> LogTab<'a> {
                 return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
                     vec![
                         AppAction::RefreshTab(),
-                        AppAction::SetStatusMessage(
-                            "Undid last operation | shift+u: redo".to_owned(),
-                        ),
+                        AppAction::SetStatusMessage("Undid last operation | U: redo".to_owned()),
                     ],
                 )));
             }
@@ -1020,11 +1156,11 @@ impl<'a> LogTab<'a> {
                     CopyToClipboard::to_clipboard_from(commit_id)
                 );
             }
-            LogTabEvent::Push { all_bookmarks } => {
+            LogTabEvent::Push => {
                 let commit_id = self.head.commit_id.clone();
 
                 let loader = LoaderPopup::new("Pushing".to_string(), move || {
-                    new_commander().git_push(all_bookmarks, &commit_id)
+                    new_commander().git_push(&commit_id)
                 });
 
                 return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
@@ -1221,13 +1357,6 @@ impl Component for LogTab<'_> {
             }
         }
 
-        // Draw rebase popup
-        {
-            if let Some(log_rebase_popup) = &mut self.rebase_popup {
-                log_rebase_popup.render_widget(f)
-            }
-        }
-
         Ok(())
     }
 
@@ -1281,38 +1410,6 @@ impl Component for LogTab<'_> {
             return Ok(ComponentInputResult::Handled);
         }
 
-        if let Some(rebase_popup) = &mut self.rebase_popup {
-            match rebase_popup.handle_input(event.clone()) {
-                Err(msg) => {
-                    // Close popup and show error message
-                    self.rebase_popup = None;
-                    return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
-                        Some(Box::new(MessagePopup::new("Error", format!("{msg:#}")))),
-                    )));
-                }
-                Ok(RebasePopupExit::Executed) => {
-                    self.rebase_popup = None;
-                    // The rebased change was rewritten; follow it
-                    let follow = self
-                        .rebase_follow
-                        .take()
-                        .unwrap_or_else(|| self.head.clone());
-                    self.set_head(new_commander().get_head_latest(&follow)?);
-                    return Ok(ComponentInputResult::HandledAction(AppAction::ChangeHead(
-                        self.head.clone(),
-                    )));
-                }
-                Ok(RebasePopupExit::Cancelled) => {
-                    self.rebase_popup = None;
-                    self.rebase_follow = None;
-                    return Ok(ComponentInputResult::Handled);
-                }
-                Ok(RebasePopupExit::KeepOpen) => {
-                    return Ok(ComponentInputResult::Handled);
-                }
-            }
-        }
-
         if let Event::Key(key) = &event {
             let key = *key;
             if key.kind != KeyEventKind::Press {
@@ -1345,6 +1442,13 @@ impl Component for LogTab<'_> {
                     }
                     LogTabEvent::Cancel => {
                         self.cancel_pick();
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    LogTabEvent::Rebase
+                        if matches!(self.pick_state, PickState::RebaseDestinations { .. }) =>
+                    {
+                        // The rebase key toggles what moves mid-gesture
+                        self.toggle_rebase_descendants();
                         return Ok(ComponentInputResult::Handled);
                     }
                     _ => {}

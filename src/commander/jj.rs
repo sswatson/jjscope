@@ -420,24 +420,16 @@ impl Commander {
     /// remote bookmarks (jj prints a warning and exits 0, so the push silently does
     /// nothing). Revisions with no bookmark fall back to `-r <commit_id>`.
     #[instrument(level = "trace", skip(self))]
-    pub fn git_push(
-        &self,
-        all_bookmarks: bool,
-        commit_id: &CommitId,
-    ) -> Result<String, CommandError> {
+    pub fn git_push(&self, commit_id: &CommitId) -> Result<String, CommandError> {
         let mut args = vec!["git".to_owned(), "push".to_owned()];
-        if all_bookmarks {
-            args.push("--all".to_owned());
+        let bookmarks = self.get_bookmarks_at(commit_id.as_str())?;
+        if bookmarks.is_empty() {
+            args.push("-r".to_owned());
+            args.push(commit_id.as_str().to_owned());
         } else {
-            let bookmarks = self.get_bookmarks_at(commit_id.as_str())?;
-            if bookmarks.is_empty() {
-                args.push("-r".to_owned());
-                args.push(commit_id.as_str().to_owned());
-            } else {
-                for bookmark in bookmarks {
-                    args.push("-b".to_owned());
-                    args.push(bookmark.name);
-                }
+            for bookmark in bookmarks {
+                args.push("-b".to_owned());
+                args.push(bookmark.name);
             }
         }
 
@@ -811,6 +803,38 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
     }
 
     #[test]
+    fn run_rebase_branch_mode() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        // Branch base -> A -> B, plus a sibling destination D off base
+        let base = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let commit_a = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new(["@"])?;
+        let commit_b = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let dest = test_repo.commander.get_current_head()?;
+
+        // Rebasing -b with the branch *tip* moves the whole branch: A (the
+        // branch root relative to the destination) gets the new parent
+        test_repo.commander.run_rebase(
+            "-b",
+            std::slice::from_ref(&commit_b.commit_id),
+            "-d",
+            std::slice::from_ref(&dest.commit_id),
+        )?;
+
+        let commit_a = test_repo
+            .commander
+            .get_change_head(&commit_a.change_id)?
+            .expect("commit A should still exist");
+        let parent = test_repo.commander.get_commit_parent(&commit_a.commit_id)?;
+        assert_eq!(parent.change_id, dest.change_id);
+
+        Ok(())
+    }
+
+    #[test]
     fn run_rebase_multiple_destinations() -> Result<()> {
         let test_repo = TestRepo::new()?;
 
@@ -1112,7 +1136,7 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
 
         // A brand-new, never-tracked bookmark must actually be pushed (not silently
         // no-op'd, which is what `jj git push -r <commit>` alone does).
-        test_repo.commander.git_push(false, &head.commit_id)?;
+        test_repo.commander.git_push(&head.commit_id)?;
 
         let remote_bookmarks = test_repo
             .commander

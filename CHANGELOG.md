@@ -11,7 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- Log tab: squash (`s`/`S`), rebase (`Ctrl+r`), and insert (`i`/`I`) now share one
+- Log tab: `r` and `Ctrl+r` are swapped — rebase is now `r` (the more common operation
+  gets the easier key) and the revset editor is `Ctrl+r`. Branch rebase (`jj rebase -b`)
+  is a separate gesture on `B`
+- Log tab: `Shift+p` (`jj git push --all`) is removed — too much of a footgun for a
+  single keypress; use the CLI when pushing everything is really intended
+- Log tab: squash (`s`/`S`), rebase (`r`), and insert (`i`/`I`) now share one
   "pick up, put down" gesture. The action key picks up the marked changes (or the
   highlighted one if none are marked); then pick the destination — or anchors, for
   insert — with the cursor (`Space` to mark several) and press `Enter` to execute
@@ -35,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Log tab: rebase (`r`) now edits the parent set in place: the picked-up change's
+  current parents appear marked with `✚`, and `Space` toggles any change in or out of
+  the candidate parent set — adding and removing parents (e.g. megamerge branches) in a
+  single gesture. `Enter` applies the edited set; if the set was left untouched, `Enter`
+  rebases onto the highlighted change instead (the plain "move it there" gesture).
+  Pressing `r` again mid-gesture toggles whether descendants come along (`-s` vs `-r`);
+  the rebase mode popup is gone. Branch rebase (`jj rebase -b`) is its own gesture on
+  `B`: pick up a change on the branch, then pick the destination(s) — no parent set can
+  be shown there, since which commits get new parents depends on the destination.
+  `-A`/`-B` rebases are covered by insert-move (`I`)
 - Log tab: simplify parents (remove redundant parent edges) of the marked/selected
   change(s) with `x` (`jj simplify-parents -r`), or of the change(s) and all their
   descendants with `X` (`-s`)

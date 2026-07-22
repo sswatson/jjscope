@@ -64,6 +64,12 @@ pub struct LogPanel<'a> {
     /// Currently marked commits
     pub marked_heads: HashSet<CommitId>,
 
+    /// When true, the marked commits are the candidate parent set of a
+    /// rebase in progress and render as [NODE_PARENT] instead of
+    /// [NODE_MARKED], so toggling a mark visibly adds/removes a future
+    /// parent edge.
+    pub marks_are_parents: bool,
+
     /// Changes the most recent `jj absorb` moved hunks into, shown with a
     /// distinct node glyph ([NODE_ABSORBED]) until the next keypress (mirrors
     /// how `App::status_message` clears). Keyed by change ID rather than
@@ -88,6 +94,9 @@ pub struct LogPanel<'a> {
 
 /// Node glyph shown in place of jj's usual node (`@`/`○`/`◆`/...) for a marked commit.
 const NODE_MARKED: char = '✓';
+/// Node glyph for a marked commit while the marks are a rebase's candidate
+/// parent set (see [LogPanel::marks_are_parents]).
+const NODE_PARENT: char = '✚';
 /// Node glyph shown in place of jj's usual node for a commit `jj absorb` just
 /// moved hunks into.
 const NODE_ABSORBED: char = '★';
@@ -158,6 +167,7 @@ impl<'a> LogPanel<'a> {
 
             head,
             marked_heads: HashSet::new(),
+            marks_are_parents: false,
             absorbed_heads: HashSet::new(),
             rebased_heads: HashSet::new(),
             title_override: None,
@@ -177,8 +187,13 @@ impl<'a> LogPanel<'a> {
         let marked_ids: Vec<&str> = self.marked_heads.iter().map(CommitId::as_str).collect();
         let absorbed_ids: Vec<&str> = self.absorbed_heads.iter().map(ChangeId::as_str).collect();
         let rebased_ids: Vec<&str> = self.rebased_heads.iter().map(ChangeId::as_str).collect();
+        let mark_glyph = if self.marks_are_parents {
+            NODE_PARENT
+        } else {
+            NODE_MARKED
+        };
         let node_overrides = [
-            (NODE_MARKED, marked_ids.as_slice()),
+            (mark_glyph, marked_ids.as_slice()),
             (NODE_ABSORBED, absorbed_ids.as_slice()),
             (NODE_REBASED, rebased_ids.as_slice()),
         ];
