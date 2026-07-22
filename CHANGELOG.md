@@ -82,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Log tab: `Shift+r` (refresh) now re-resolves the selected change instead of only
+  re-fetching the graph. When jj activity outside the app rewrote or abandoned the
+  selected change, the details panel — and every subsequent action — kept operating on
+  the old commit, making the app look permanently stale until restarted. Refresh now
+  follows the change's evolution and falls back to `@` if the change is gone
 - Describing a commit with a message starting with a dash no longer fails
 - Git push no longer passes `--allow-new`, which was removed in jj 0.42 and made every
   "push with new bookmarks" keybinding (`Ctrl+p`/`Ctrl+Shift+p`) fail, so those keybindings

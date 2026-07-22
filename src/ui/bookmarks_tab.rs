@@ -947,6 +947,7 @@ impl Component for BookmarksTab<'_> {
                                 ("N".to_owned(), "new and describe".to_owned()),
                                 ("e".to_owned(), "edit bookmark".to_owned()),
                                 ("p".to_owned(), "push bookmark".to_owned()),
+                                ("R/F5".to_owned(), "refresh the view".to_owned()),
                             ],
                             vec![
                                 ("Ctrl+e/Ctrl+y".to_owned(), "scroll down/up".to_owned()),

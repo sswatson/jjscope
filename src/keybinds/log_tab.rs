@@ -200,6 +200,7 @@ impl LogTabKeybinds {
             LogTabEvent::ScrollUpHalf => "scroll up by ½ page",
             LogTabEvent::OpenFiles => "see files",
             LogTabEvent::FocusCurrent => "current change",
+            LogTabEvent::Refresh => "refresh the view",
             LogTabEvent::EditRevset => "set revset",
             LogTabEvent::Describe => "describe change",
             LogTabEvent::Duplicate => "duplicate change",

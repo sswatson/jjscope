@@ -455,6 +455,7 @@ impl Component for FilesTab {
                                         .to_owned(),
                                 ),
                                 ("@".to_owned(), "view current change files".to_owned()),
+                                ("R/F5".to_owned(), "refresh the view".to_owned()),
                             ],
                             vec![
                                 ("Ctrl+e/Ctrl+y".to_owned(), "scroll down/up".to_owned()),

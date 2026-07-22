@@ -912,7 +912,13 @@ impl<'a> LogTab<'a> {
             }
             LogTabEvent::Refresh => {
                 self.mark_cache_as_dirty();
-                self.refresh_log_output();
+                // Re-resolve the selected head: external jj activity may have
+                // rewritten it (new commit id) or abandoned it entirely, and
+                // refreshing only the graph would leave the details panel — and
+                // every subsequent action on self.head — pointing at the old
+                // commit. get_head_latest follows the change's evolution and
+                // falls back to @ if the change is gone.
+                self.set_head(new_commander().get_head_latest(&self.head)?);
             }
 
             LogTabEvent::Duplicate => {
