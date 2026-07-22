@@ -49,30 +49,42 @@ use crate::ui::utils::tabs_to_spaces;
 const NEW_POPUP_ID: u16 = 1;
 const EDIT_POPUP_ID: u16 = 2;
 const ABANDON_POPUP_ID: u16 = 3;
-const SQUASH_POPUP_ID: u16 = 4;
 const METAEDIT_UPDATE_CHANGE_ID_POPUP_ID: u16 = 5;
-const INSERT_POPUP_ID: u16 = 6;
 const RESOLVE_POPUP_ID: u16 = 7;
 
-/// State of the two-phase "insert between" flow, which collects `-A`/`-B` anchors for
-/// `jj new`/`jj rebase` by reusing the log panel's normal commit marking.
+/// State of a multi-phase "pick up, put down" gesture (rebase, squash,
+/// insert).
+///
+/// The gesture's first pick happens *before* the action key: the marked
+/// changes, or the change under the cursor if none are marked. Pressing the
+/// action key consumes that pick and enters one of these collecting states
+/// for the next pick; Enter advances (again taking the marks, or the cursor
+/// if none), and Esc cancels. The final Enter executes directly — the
+/// deliberate multi-phase gesture is its own confirmation.
 #[derive(Clone)]
-enum InsertState {
-    /// Not currently collecting anchors.
+enum PickState {
+    /// No gesture in progress.
     Idle,
-    /// Marking the `-A` (insert-after) anchors. `moving` is the change being moved into
-    /// position, or `None` if a brand new change is being created instead.
-    CollectingAfter { moving: Option<Head> },
-    /// Marking the `-B` (insert-before) anchors, having already collected the `-A` anchors.
-    CollectingBefore {
-        moving: Option<Head>,
-        after: Vec<CommitId>,
+    /// After the rebase key: collecting the destination(s). Multiple
+    /// destinations rebase `sources` onto their merge.
+    RebaseDestinations { sources: Vec<CommitId> },
+    /// After the squash key: collecting the single destination. On entry the
+    /// cursor is placed on the source's parent, so an immediate Enter gives
+    /// `jj squash` semantics.
+    SquashDestination {
+        sources: Vec<CommitId>,
+        ignore_immutable: bool,
     },
-    /// Anchors collected; the confirm popup is showing.
-    Confirming {
-        moving: Option<Head>,
+    /// After the insert-move key: collecting the `-A` (insert-after) anchors
+    /// for the change being moved.
+    InsertAfter { moving: CommitId },
+    /// Collecting the `-B` (insert-before) anchors: entered directly by the
+    /// insert-new key (whose pre-key pick is the `-A` anchors; `moving` is
+    /// `None` since a brand-new change is created), or as the second phase
+    /// of insert-move.
+    InsertBefore {
+        moving: Option<CommitId>,
         after: Vec<CommitId>,
-        before: Vec<CommitId>,
     },
 }
 
@@ -110,9 +122,9 @@ pub struct LogTab<'a> {
     describe_after_new: bool,
 
     rebase_popup: Option<RebasePopup>,
-
-    squash_ignore_immutable: bool,
-    squash_target: Option<Head>,
+    /// The first picked-up rebase source, resolved before the rebase rewrites
+    /// it, so the selection can follow the moved change afterwards.
+    rebase_follow: Option<Head>,
 
     edit_ignore_immutable: bool,
 
@@ -120,7 +132,7 @@ pub struct LogTab<'a> {
 
     resolve_keep_destination: bool,
 
-    insert_state: InsertState,
+    pick_state: PickState,
 
     config: JjConfig,
     pane_divider: PaneDivider,
@@ -205,9 +217,7 @@ impl<'a> LogTab<'a> {
             describe_after_new: false,
 
             rebase_popup: None,
-
-            squash_ignore_immutable: false,
-            squash_target: None,
+            rebase_follow: None,
 
             edit_ignore_immutable: false,
 
@@ -215,7 +225,7 @@ impl<'a> LogTab<'a> {
 
             resolve_keep_destination: false,
 
-            insert_state: InsertState::Idle,
+            pick_state: PickState::Idle,
 
             config,
             pane_divider,
@@ -327,14 +337,6 @@ each other in code:
 * `handle_<action>` - Set up the dialog and show it.
 * `execute_<action>` - Perform some action after the dialog closed.
 */
-fn short_commit_ids(commit_ids: &[CommitId]) -> String {
-    commit_ids
-        .iter()
-        .map(|commit_id| commit_id.as_str().chars().take(8).collect::<String>())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 impl<'a> LogTab<'a> {
     fn handle_new(&mut self, describe: bool) -> Result<ComponentInputResult> {
         let mark_count = self.log_panel.marked_heads.len();
@@ -381,116 +383,237 @@ impl<'a> LogTab<'a> {
         Ok(Some(AppAction::ChangeHead(self.head.clone())))
     }
 
-    /// Start the two-phase "insert between" flow: the log panel's normal marking is reused to
-    /// collect `-A` (insert-after) anchors first, then `-B` (insert-before) anchors. `moving` is
-    /// the change being relocated, or `None` if a brand new change should be created instead.
-    fn start_insert(&mut self, moving: Option<Head>) {
-        self.log_panel.extract_and_clear_head_marks();
-        self.insert_state = InsertState::CollectingAfter { moving };
-        self.update_insert_title();
+    /// Take the current pick of a "pick up, put down" gesture: the marked
+    /// changes, or the change under the cursor if none are marked. Sorted for
+    /// a stable order, since mark storage is an unordered set.
+    fn take_picked_commits(&mut self) -> Vec<CommitId> {
+        let mut marks = self.log_panel.extract_and_clear_head_marks();
+        if marks.is_empty() {
+            return vec![self.head.commit_id.clone()];
+        }
+        marks.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        marks
     }
 
-    fn cancel_insert(&mut self) {
+    fn message_popup(title: &'static str, message: &'static str) -> Result<ComponentInputResult> {
+        Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+            Some(Box::new(MessagePopup::new(title, message))),
+        )))
+    }
+
+    /// Pick up change(s) to rebase; the destinations are picked next.
+    fn start_rebase(&mut self) {
+        let sources = self.take_picked_commits();
+        self.pick_state = PickState::RebaseDestinations { sources };
+        self.update_pick_title();
+    }
+
+    /// Pick up change(s) to squash; the destination is picked next, with the
+    /// cursor pre-placed on the source's parent as the natural default.
+    fn start_squash(&mut self, ignore_immutable: bool) {
+        let sources = self.take_picked_commits();
+        if let [source] = sources.as_slice()
+            && let Ok(parent) = new_commander().get_commit_parent(source)
+        {
+            self.set_head(parent);
+        }
+        self.pick_state = PickState::SquashDestination {
+            sources,
+            ignore_immutable,
+        };
+        self.update_pick_title();
+    }
+
+    /// Pick up the `-A` (insert-after) anchors for a brand-new change; the
+    /// `-B` (insert-before) anchors are picked next.
+    ///
+    /// Exception: for exactly two picks where one is an ancestor of the
+    /// other, the assignment is forced (the reverse would be a cycle), so
+    /// the new change is inserted between them immediately.
+    fn start_insert_new(&mut self) -> Result<ComponentInputResult> {
+        let picked = self.take_picked_commits();
+
+        if let [x, y] = picked.as_slice()
+            && let [descendant] = new_commander().get_heads_among(&picked)?.as_slice()
+        {
+            let ancestor = if descendant == x { y } else { x };
+            return self.execute_insert_new(
+                vec![ancestor.clone()],
+                std::slice::from_ref(descendant).to_vec(),
+            );
+        }
+
+        self.pick_state = PickState::InsertBefore {
+            moving: None,
+            after: picked,
+        };
+        self.update_pick_title();
+        Ok(ComponentInputResult::Handled)
+    }
+
+    /// Insert a brand-new change between the anchors and put the cursor on it.
+    fn execute_insert_new(
+        &mut self,
+        after: Vec<CommitId>,
+        before: Vec<CommitId>,
+    ) -> Result<ComponentInputResult> {
+        match new_commander().run_new_insert(&after, &before) {
+            Err(err) => Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                Some(Box::new(MessagePopup::new("Insert", format!("{err:#}")))),
+            ))),
+            Ok(inserted) => {
+                self.set_head(inserted);
+                Ok(ComponentInputResult::HandledAction(AppAction::ChangeHead(
+                    self.head.clone(),
+                )))
+            }
+        }
+    }
+
+    /// Pick up the change to move; its `-A` and `-B` anchors are picked next.
+    fn start_insert_move(&mut self) -> Result<ComponentInputResult> {
+        let picked = self.take_picked_commits();
+        let [moving] = picked.as_slice() else {
+            return Self::message_popup(
+                "Insert",
+                "Mark exactly one change to move, or none to move the change under the cursor.",
+            );
+        };
+        self.pick_state = PickState::InsertAfter {
+            moving: moving.clone(),
+        };
+        self.update_pick_title();
+        Ok(ComponentInputResult::Handled)
+    }
+
+    fn cancel_pick(&mut self) {
         self.log_panel.extract_and_clear_head_marks();
-        self.insert_state = InsertState::Idle;
+        self.pick_state = PickState::Idle;
         self.log_panel.title_override = None;
     }
 
-    fn update_insert_title(&mut self) {
-        let hint = match &self.insert_state {
-            InsertState::Idle => None,
-            InsertState::CollectingAfter { .. } => Some(
-                " Insert: mark AFTER-anchors (space: mark, enter: next, esc: cancel) ".to_owned(),
-            ),
-            InsertState::CollectingBefore { .. } => Some(
-                " Insert: mark BEFORE-anchors (space: mark, enter: confirm, esc: cancel) "
+    fn update_pick_title(&mut self) {
+        let hint = match &self.pick_state {
+            PickState::Idle => None,
+            PickState::RebaseDestinations { .. } => Some(
+                " Rebase: pick destination(s) (space: mark several, enter: confirm, esc: cancel) "
                     .to_owned(),
             ),
-            InsertState::Confirming { .. } => None,
+            PickState::SquashDestination { .. } => {
+                Some(" Squash: pick destination (enter: confirm, esc: cancel) ".to_owned())
+            }
+            PickState::InsertAfter { .. } => Some(
+                " Move: pick AFTER-anchors (space: mark several, enter: next, esc: cancel) "
+                    .to_owned(),
+            ),
+            PickState::InsertBefore {
+                moving: Some(_), ..
+            } => Some(
+                " Move: pick BEFORE-anchors (space: mark several, enter: confirm, esc: cancel) "
+                    .to_owned(),
+            ),
+            PickState::InsertBefore { moving: None, .. } => Some(
+                " Insert: pick BEFORE-anchors (space: mark several, enter: confirm, esc: cancel) "
+                    .to_owned(),
+            ),
         };
         self.log_panel.title_override = hint;
     }
 
-    /// Advance the insert flow on Enter: collects the current marks for the phase that just
-    /// finished, and either moves to the next phase or opens the final confirmation popup.
-    fn advance_insert(&mut self) -> Result<ComponentInputResult> {
-        match self.insert_state.clone() {
-            InsertState::Idle => Ok(ComponentInputResult::Handled),
-            InsertState::CollectingAfter { moving } => {
-                let after = self.log_panel.extract_and_clear_head_marks();
-                self.insert_state = InsertState::CollectingBefore { moving, after };
-                self.update_insert_title();
+    /// Advance the pick gesture on Enter: take the current pick and either
+    /// move to the next phase or execute.
+    fn advance_pick(&mut self) -> Result<ComponentInputResult> {
+        match self.pick_state.clone() {
+            PickState::Idle => Ok(ComponentInputResult::Handled),
+            PickState::RebaseDestinations { sources } => {
+                let targets = self.take_picked_commits();
+                if targets.iter().any(|target| sources.contains(target)) {
+                    return Self::message_popup(
+                        "Rebase",
+                        "The destination is one of the picked-up changes.",
+                    );
+                }
+                self.pick_state = PickState::Idle;
+                self.log_panel.title_override = None;
+                // Resolve the first source before the rebase rewrites it, so
+                // the selection can follow the moved change afterwards
+                self.rebase_follow = sources
+                    .first()
+                    .and_then(|source| new_commander().get_head(source.as_str()).ok());
+                self.rebase_popup = Some(RebasePopup::new(sources, targets));
                 Ok(ComponentInputResult::Handled)
             }
-            InsertState::CollectingBefore { moving, after } => {
-                let before = self.log_panel.extract_and_clear_head_marks();
+            PickState::SquashDestination {
+                sources,
+                ignore_immutable,
+            } => {
+                let targets = self.take_picked_commits();
+                let [target] = targets.as_slice() else {
+                    return Self::message_popup("Squash", "Pick a single destination change.");
+                };
+                if sources.contains(target) {
+                    return Self::message_popup("Squash", "Cannot squash a change into itself.");
+                }
+                self.pick_state = PickState::Idle;
                 self.log_panel.title_override = None;
 
-                if after.is_empty() && before.is_empty() {
-                    self.insert_state = InsertState::Idle;
+                // Resolve the destination before squashing rewrites it, so the
+                // selection can follow it afterwards
+                let target_head = new_commander().get_head(target.as_str())?;
+                if let Err(err) =
+                    new_commander().run_squash_into(&sources, target.as_str(), ignore_immutable)
+                {
                     return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
-                        Some(Box::new(MessagePopup::new(
-                            "Insert",
-                            "No after- or before-anchors were marked.",
-                        ))),
+                        Some(Box::new(MessagePopup::new("Squash", format!("{err:#}")))),
                     )));
                 }
-
-                let mut lines = vec![Line::from(if moving.is_some() {
-                    "Are you sure you want to move the selected change here?"
-                } else {
-                    "Are you sure you want to insert a new change here?"
-                })];
-                if !after.is_empty() {
-                    lines.push(Line::from(format!("After: {}", short_commit_ids(&after))));
-                }
-                if !before.is_empty() {
-                    lines.push(Line::from(format!("Before: {}", short_commit_ids(&before))));
-                }
-
-                self.insert_state = InsertState::Confirming {
-                    moving,
+                self.set_head(new_commander().get_head_latest(&target_head)?);
+                Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+                    vec![
+                        AppAction::ChangeHead(self.head.clone()),
+                        AppAction::SetStatusMessage("Squashed | u: undo".to_owned()),
+                    ],
+                )))
+            }
+            PickState::InsertAfter { moving } => {
+                let after = self.take_picked_commits();
+                self.pick_state = PickState::InsertBefore {
+                    moving: Some(moving),
                     after,
-                    before,
                 };
-                self.popup = ConfirmDialogState::new(
-                    INSERT_POPUP_ID,
-                    Span::styled(" Insert ", Style::new().bold().cyan()),
-                    Text::from(lines).fg(Color::default()),
-                );
-                self.popup
-                    .with_yes_button(ButtonLabel::YES.clone())
-                    .with_no_button(ButtonLabel::NO.clone())
-                    .with_listener(Some(self.popup_tx.clone()))
-                    .open();
+                self.update_pick_title();
                 Ok(ComponentInputResult::Handled)
             }
-            InsertState::Confirming { .. } => Ok(ComponentInputResult::Handled),
-        }
-    }
+            PickState::InsertBefore { moving, after } => {
+                let before = self.take_picked_commits();
+                self.pick_state = PickState::Idle;
+                self.log_panel.title_override = None;
 
-    // Execute the insert command, after self.popup returned
-    fn execute_insert(&mut self) -> Result<Option<AppAction>> {
-        let state = std::mem::replace(&mut self.insert_state, InsertState::Idle);
-        let InsertState::Confirming {
-            moving,
-            after,
-            before,
-        } = state
-        else {
-            return Ok(None);
-        };
+                let Some(moving) = &moving else {
+                    return self.execute_insert_new(after, before);
+                };
 
-        match moving {
-            Some(moving) => {
-                new_commander().run_rebase_insert(moving.commit_id.as_str(), &after, &before)?;
+                // Resolve before the rebase rewrites the moved change, so the
+                // cursor can follow it afterwards
+                let landed = new_commander()
+                    .get_head(moving.as_str())
+                    .and_then(|moving_head| {
+                        new_commander().run_rebase_insert(moving.as_str(), &after, &before)?;
+                        new_commander().get_head_latest(&moving_head)
+                    });
+                match landed {
+                    Err(err) => Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                        Some(Box::new(MessagePopup::new("Insert", format!("{err:#}")))),
+                    ))),
+                    Ok(landed) => {
+                        self.set_head(landed);
+                        Ok(ComponentInputResult::HandledAction(AppAction::ChangeHead(
+                            self.head.clone(),
+                        )))
+                    }
+                }
             }
-            None => {
-                new_commander().run_new_insert(&after, &before)?;
-            }
         }
-
-        Ok(Some(AppAction::RefreshTab()))
     }
 
     fn handle_abandon(&mut self) -> Result<ComponentInputResult> {
@@ -557,128 +680,6 @@ impl<'a> LogTab<'a> {
         } else {
             Ok(None)
         }
-    }
-
-    /// Open the rebase popup: the selected change is the source, and the
-    /// marked changes are the destinations.
-    fn handle_rebase(&mut self) -> Result<ComponentInputResult> {
-        let message_popup = |title: &'static str, message: &'static str| {
-            Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
-                Some(Box::new(MessagePopup::new(title, message))),
-            )))
-        };
-
-        if self.log_panel.marked_heads.is_empty() {
-            return message_popup(
-                "Rebase",
-                "Mark the destination change(s) with space, then rebase the selected change.",
-            );
-        }
-        if self.head.immutable {
-            return message_popup(
-                "Rebase",
-                "The change cannot be rebased because it is immutable.",
-            );
-        }
-        if self.log_panel.is_head_marked(&self.head) {
-            return message_popup(
-                "Rebase",
-                "The selected change is one of the marked destinations.",
-            );
-        }
-
-        // Sort for a stable order, since mark storage is an unordered set
-        let mut targets: Vec<CommitId> = self.log_panel.marked_heads.iter().cloned().collect();
-        targets.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-
-        self.rebase_popup = Some(RebasePopup::new(self.head.clone(), targets));
-        Ok(ComponentInputResult::Handled)
-    }
-
-    /// Ask for confirmation to squash the selected change into its parent,
-    /// or into the marked change if there is one.
-    fn handle_squash(&mut self, ignore_immutable: bool) -> Result<ComponentInputResult> {
-        let message_popup = |message: &'static str| {
-            Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
-                Some(Box::new(MessagePopup::new("Squash", message))),
-            )))
-        };
-
-        if self.log_panel.marked_heads.len() > 1 {
-            return message_popup("Squash supports at most one marked destination.");
-        }
-        if self.head.immutable && !ignore_immutable {
-            return message_popup("The change cannot be squashed because it is immutable.");
-        }
-
-        let mark = self.log_panel.marked_heads.iter().next().cloned();
-        let (target, into_parent) = match mark {
-            Some(mark) => {
-                if mark == self.head.commit_id {
-                    return message_popup("Cannot squash a change into itself.");
-                }
-                (new_commander().get_head(mark.as_str())?, false)
-            }
-            None => match new_commander().get_commit_parent(&self.head.commit_id) {
-                Ok(parent) => (parent, true),
-                Err(_) => return message_popup("The change has no parent to squash into."),
-            },
-        };
-        if target.immutable && !ignore_immutable {
-            return message_popup("Cannot squash into an immutable change.");
-        }
-
-        let description = if into_parent {
-            "Are you sure you want to squash this change into its parent?"
-        } else {
-            "Are you sure you want to squash this change into the marked change?"
-        };
-        let mut lines = vec![
-            Line::from(description),
-            Line::from(format!(
-                "Squash {} into {}",
-                self.head.change_id.as_str(),
-                target.change_id.as_str()
-            )),
-        ];
-        if ignore_immutable && (self.head.immutable || target.immutable) {
-            lines.push(Line::from("Immutability will be ignored."));
-        }
-        self.popup = ConfirmDialogState::new(
-            SQUASH_POPUP_ID,
-            Span::styled(" Squash ", Style::new().bold().cyan()),
-            Text::from(lines).fg(Color::default()),
-        );
-        self.popup
-            .with_yes_button(ButtonLabel::YES.clone())
-            .with_no_button(ButtonLabel::NO.clone())
-            .with_listener(Some(self.popup_tx.clone()))
-            .open();
-        self.squash_target = Some(target);
-        self.squash_ignore_immutable = ignore_immutable;
-        Ok(ComponentInputResult::Handled)
-    }
-
-    // Execute squash command, after self.popup returned
-    fn execute_squash(&mut self) -> Result<Option<AppAction>> {
-        let Some(target) = self.squash_target.take() else {
-            return Ok(None);
-        };
-        if let Err(err) = new_commander().run_squash_into(
-            self.head.commit_id.as_str(),
-            target.commit_id.as_str(),
-            self.squash_ignore_immutable,
-        ) {
-            return Ok(Some(AppAction::SetPopup(Some(Box::new(
-                MessagePopup::new("Squash", format!("{err:#}")),
-            )))));
-        }
-
-        // The marked destination (if any) was consumed
-        self.log_panel.extract_and_clear_head_marks();
-        // The squashed-into change was rewritten; follow it
-        self.set_head(new_commander().get_head_latest(&target)?);
-        Ok(Some(AppAction::ChangeHead(self.head.clone())))
     }
 
     fn handle_resolve(&mut self, keep_destination: bool) -> Result<ComponentInputResult> {
@@ -791,17 +792,16 @@ impl<'a> LogTab<'a> {
                 return self.handle_new(describe);
             }
             LogTabEvent::InsertNew => {
-                self.start_insert(None);
+                return self.start_insert_new();
             }
             LogTabEvent::InsertMove => {
-                let moving = self.head.clone();
-                self.start_insert(Some(moving));
+                return self.start_insert_move();
             }
             LogTabEvent::Rebase => {
-                return self.handle_rebase();
+                self.start_rebase();
             }
             LogTabEvent::Squash { ignore_immutable } => {
-                return self.handle_squash(ignore_immutable);
+                self.start_squash(ignore_immutable);
             }
             LogTabEvent::EditChange { ignore_immutable } => {
                 if self.head.immutable && !ignore_immutable {
@@ -864,6 +864,34 @@ impl<'a> LogTab<'a> {
             }
             LogTabEvent::Abandon => {
                 return self.handle_abandon();
+            }
+            LogTabEvent::SimplifyParents {
+                include_descendants,
+            } => {
+                let picks = self.take_picked_commits();
+                match new_commander().run_simplify_parents(&picks, include_descendants) {
+                    Err(err) => {
+                        return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                            Some(Box::new(MessagePopup::new(
+                                "Simplify parents",
+                                format!("{err:#}"),
+                            ))),
+                        )));
+                    }
+                    Ok(summary) => {
+                        let status_message = match summary {
+                            Some(summary) => format!("{summary} | u: undo"),
+                            None => "No redundant parents to remove".to_owned(),
+                        };
+                        self.set_head(new_commander().get_head_latest(&self.head)?);
+                        return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+                            vec![
+                                AppAction::ChangeHead(self.head.clone()),
+                                AppAction::SetStatusMessage(status_message),
+                            ],
+                        )));
+                    }
+                }
             }
             LogTabEvent::ResolveConflicts { keep_destination } => {
                 return self.handle_resolve(keep_destination);
@@ -1073,12 +1101,6 @@ impl Component for LogTab<'_> {
                 ABANDON_POPUP_ID => {
                     return self.execute_abandon();
                 }
-                SQUASH_POPUP_ID => {
-                    return self.execute_squash();
-                }
-                INSERT_POPUP_ID => {
-                    return self.execute_insert();
-                }
                 RESOLVE_POPUP_ID => {
                     return self.execute_resolve();
                 }
@@ -1270,17 +1292,19 @@ impl Component for LogTab<'_> {
                 }
                 Ok(RebasePopupExit::Executed) => {
                     self.rebase_popup = None;
-                    // The marked destinations were consumed
-                    self.log_panel.extract_and_clear_head_marks();
                     // The rebased change was rewritten; follow it
-                    self.set_head(new_commander().get_head_latest(&self.head)?);
+                    let follow = self
+                        .rebase_follow
+                        .take()
+                        .unwrap_or_else(|| self.head.clone());
+                    self.set_head(new_commander().get_head_latest(&follow)?);
                     return Ok(ComponentInputResult::HandledAction(AppAction::ChangeHead(
                         self.head.clone(),
                     )));
                 }
                 Ok(RebasePopupExit::Cancelled) => {
-                    // Marks are kept, so the rebase can be retried
                     self.rebase_popup = None;
+                    self.rebase_follow = None;
                     return Ok(ComponentInputResult::Handled);
                 }
                 Ok(RebasePopupExit::KeepOpen) => {
@@ -1312,15 +1336,15 @@ impl Component for LogTab<'_> {
                 return Ok(ComponentInputResult::Handled);
             }
 
-            if !matches!(self.insert_state, InsertState::Idle) {
+            if !matches!(self.pick_state, PickState::Idle) {
                 match self.keybinds.match_event(key) {
                     LogTabEvent::OpenFiles => {
-                        // "enter" advances the insert flow instead of opening files while
-                        // anchors are being collected.
-                        return self.advance_insert();
+                        // "enter" advances the pick gesture instead of opening
+                        // files while a pick is being collected.
+                        return self.advance_pick();
                     }
                     LogTabEvent::Cancel => {
-                        self.cancel_insert();
+                        self.cancel_pick();
                         return Ok(ComponentInputResult::Handled);
                     }
                     _ => {}

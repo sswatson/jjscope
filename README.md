@@ -21,7 +21,7 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - See different revset with `r`
   - Set a bookmark to selected change with `b`
   - Fetch/push with `f`/`p`
-  - Squash selected change into its parent (or the marked change) with `s`/`S`
+  - Squash changes with `s`/`S`: pick up, then pick the destination
   - Yank change ID/revision to the system clipboard with `y`/`Y`
 - Files
   - View files in current change and diff in side panel
@@ -100,15 +100,20 @@ See all key mappings for the current tab with `?`.
 - Toggle details panel wrapping with `W`
 - Create new change after highlighted change with `n` (`jj new`)
   - Create new change and describe with `N` (`jj new -m`)
-- Insert a new change between marked changes with `i` (`jj new -A -B`)
-  - Mark the changes to insert after, press `Enter`, mark the changes to insert before, then press
-    `Enter` again to confirm. Either set can be left empty. Press `Esc` to cancel.
-- Move the highlighted change between marked changes with `I` (`jj rebase -r -A -B`)
-  - Same marking flow as inserting a new change, but moves the highlighted change instead of
-    creating a new one
+- Insert a new change between other changes with `i` (`jj new --no-edit -A -B`; `@` stays where it is)
+  - Marking two changes where one is an ancestor of the other inserts between them immediately —
+    the assignment is inferred, since the reverse would be a cycle
+  - Otherwise the marked changes (or the highlighted one) become the after-anchors; after pressing
+    `i`, pick the before-anchors (`Space` to mark several, or just point at one) and press `Enter`
+  - Press `Esc` to cancel
+- Move the highlighted (or marked) change between other changes with `I` (`jj rebase -r -A -B`)
+  - After pressing `I`, pick the after-anchors, press `Enter`, pick the before-anchors, and
+    press `Enter` again
 - Edit highlighted change with `e` (`jj edit`)
   - Edit highlighted change ignoring immutability with `E` (`jj edit --ignore-immutable`)
 - Abandon a change with `a` (`jj abandon`)
+- Simplify parents of the marked/highlighted change(s) with `x` (`jj simplify-parents -r`)
+  - Simplify the change(s) and all their descendants with `X` (`jj simplify-parents -s`)
 - Absorb the highlighted change's diff into its mutable ancestors with `A` (`jj absorb --from`)
   - Until the next keypress, the log marks the revisions that actually received hunks with `★`
     and the revisions that were only rebased as a consequence with `☆`
@@ -127,11 +132,13 @@ See all key mappings for the current tab with `?`.
   - Scroll in bookmark list with `j`/`k`
   - Create a new bookmark with `c`
   - Use auto-generated name with `g`
-- Squash the highlighted change into its parent with `s` (`jj squash --from --into`)
-  - If a change is marked (with `Space`), the highlighted change is squashed into the marked change instead
+- Squash changes with `s` (`jj squash --from --into`): press `s` to pick up the marked changes
+  (or the highlighted one), then pick the destination and press `Enter`
+  - The cursor starts on the parent, so `s` then `Enter` squashes into the parent (like bare `jj squash`)
   - Squash ignoring immutability with `S` (`jj squash --ignore-immutable`)
-- Rebase the highlighted change onto the marked change(s) with `Ctrl+r` (`jj rebase`)
-  - Mark the destination(s) with `Space` first; marking several destinations rebases onto their merge
+- Rebase changes with `Ctrl+r` (`jj rebase`): press `Ctrl+r` to pick up the marked changes
+  (or the highlighted one), then pick the destination(s) and press `Enter`
+  - Marking several destinations rebases onto their merge
   - The popup offers `-r`/`-s`/`-b` for what moves and `-d`/`-A`/`-B` for where it lands
 - Git fetch with `f` (`jj git fetch`)
   - Git fetch all remotes with `F` (`jj git fetch --all-remotes`)

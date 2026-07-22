@@ -586,7 +586,7 @@ mod tests {
         let source = test_repo.commander.get_current_head()?;
 
         test_repo.commander.run_squash_into(
-            source.commit_id.as_str(),
+            std::slice::from_ref(&source.commit_id),
             dest.commit_id.as_str(),
             false,
         )?;

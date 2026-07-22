@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::anyhow;
 use tracing::instrument;
 
 use crate::commander::CommandError;
@@ -28,6 +29,16 @@ pub struct AbsorbOutcome {
     pub rebased: Vec<Head>,
 }
 
+/// Parse the commit ID prefix out of `jj new --no-edit`'s
+/// `Created new commit <change_id> <commit_id> ...` stderr message.
+fn parse_created_commit(stderr: &str) -> Option<&str> {
+    stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Created new commit "))?
+        .split_whitespace()
+        .nth(1)
+}
+
 /// Parse the change ID prefixes out of `jj absorb`'s "Absorbed changes into
 /// N revisions:" stderr listing, whose entries look like
 /// `  wnzmyvwk b9a3db4b commit-A`. Returns an empty list if the message
@@ -44,18 +55,26 @@ fn parse_absorb_destinations(stderr: &str) -> Vec<String> {
 }
 
 impl Commander {
-    /// Create a new change after revisions. Maps to `jj new <revision>...`
+    /// Create a new change after revisions, moving `@` into it.
+    /// Maps to `jj new <revision>...`
     #[instrument(level = "trace", skip(self, revisions))]
     pub fn run_new<'a, T: IntoIterator<Item = &'a str>>(&self, revisions: T) -> Result<()> {
         let args = ["new"].into_iter().chain::<T>(revisions);
         self.jj(args).run_void().context("Failed executing jj new")
     }
 
-    /// Create a new change inserted after and/or before revisions.
-    /// Maps to `jj new -A <revision>... -B <revision>...`
+    /// Create a new change inserted after and/or before revisions, without
+    /// moving `@`, and return it.
+    /// Maps to `jj new --no-edit -A <revision>... -B <revision>...`
+    ///
+    /// `--no-edit` keeps `@` where it is: moving `@` would twist the printed
+    /// graph around, and moving it *off* an empty undescribed change (e.g. a
+    /// megamerge working set) would silently abandon that change. Callers
+    /// should put the cursor on the returned change instead, from where the
+    /// user can `edit` into it if that's what they want.
     #[instrument(level = "trace", skip(self, after, before))]
-    pub fn run_new_insert(&self, after: &[CommitId], before: &[CommitId]) -> Result<()> {
-        let mut args = vec!["new".to_owned()];
+    pub fn run_new_insert(&self, after: &[CommitId], before: &[CommitId]) -> Result<Head> {
+        let mut args = vec!["new".to_owned(), "--no-edit".to_owned()];
         for commit_id in after {
             args.push("-A".to_owned());
             args.push(commit_id.as_str().to_owned());
@@ -65,7 +84,13 @@ impl Commander {
             args.push(commit_id.as_str().to_owned());
         }
 
-        self.jj(args).run_void().context("Failed executing jj new")
+        let stderr = self
+            .jj(args)
+            .run_stderr()
+            .context("Failed executing jj new")?;
+        let commit_prefix = parse_created_commit(&stderr)
+            .ok_or_else(|| anyhow!("jj new did not report the created commit"))?;
+        self.get_head(commit_prefix)
     }
 
     /// Move a change so that it's inserted after and/or before revisions.
@@ -133,19 +158,24 @@ impl Commander {
             .context("Failed executing jj describe")
     }
 
-    /// Rebase changes. Maps to `jj rebase -s <rev> -d <rev>...` or similar
+    /// Rebase changes. Maps to `jj rebase -s <rev>... -d <rev>...` or similar
     ///
-    /// Multiple targets are all passed with the same `tgt_mode` flag; with
-    /// `-d` that rebases the source onto a merge of the targets.
+    /// Multiple sources are all passed with the same `src_mode` flag, and
+    /// multiple targets with the same `tgt_mode` flag; with `-d`, multiple
+    /// targets rebase the sources onto a merge of the targets.
     #[instrument(level = "trace", skip(self))]
     pub fn run_rebase(
         &self,
         src_mode: &str,
-        src_rev: &str,
+        src_revs: &[CommitId],
         tgt_mode: &str,
         tgt_revs: &[CommitId],
     ) -> Result<()> {
-        let mut args = vec!["rebase", src_mode, src_rev];
+        let mut args = vec!["rebase"];
+        for src_rev in src_revs {
+            args.push(src_mode);
+            args.push(src_rev.as_str());
+        }
         for tgt_rev in tgt_revs {
             args.push(tgt_mode);
             args.push(tgt_rev.as_str());
@@ -154,14 +184,25 @@ impl Commander {
         Ok(self.jj(args).run_void()?)
     }
 
-    /// Squash a whole change into another change.
-    /// Maps to `jj squash -u --from <revision> --into <revision>`
+    /// Squash whole change(s) into another change.
+    /// Maps to `jj squash -u --from <revision>... --into <revision>`
     ///
     /// `-u` keeps the destination's description, since jj's default of
-    /// combining the two descriptions would open an editor.
+    /// combining the descriptions would open an editor.
     #[instrument(level = "trace", skip(self))]
-    pub fn run_squash_into(&self, from: &str, into: &str, ignore_immutable: bool) -> Result<()> {
-        let mut args = vec!["squash", "-u", "--from", from, "--into", into];
+    pub fn run_squash_into(
+        &self,
+        from: &[CommitId],
+        into: &str,
+        ignore_immutable: bool,
+    ) -> Result<()> {
+        let mut args = vec!["squash", "-u"];
+        for from_rev in from {
+            args.push("--from");
+            args.push(from_rev.as_str());
+        }
+        args.push("--into");
+        args.push(into);
         if ignore_immutable {
             args.push("--ignore-immutable");
         }
@@ -169,6 +210,36 @@ impl Commander {
         self.jj(args)
             .run_void()
             .context("Failed executing jj squash")
+    }
+
+    /// Remove redundant parent edges (parents that are also indirect
+    /// ancestors through another parent) from the given revisions.
+    /// Maps to `jj simplify-parents -r <revision>...`, or `-s` with
+    /// `include_descendants`, which also simplifies all their descendants.
+    ///
+    /// Returns jj's human-readable summary ("Removed N edges from M out of
+    /// K commits."), or `None` if there was nothing to simplify.
+    #[instrument(level = "trace", skip(self, revisions))]
+    pub fn run_simplify_parents(
+        &self,
+        revisions: &[CommitId],
+        include_descendants: bool,
+    ) -> Result<Option<String>> {
+        let flag = if include_descendants { "-s" } else { "-r" };
+        let mut args = vec!["simplify-parents"];
+        for revision in revisions {
+            args.push(flag);
+            args.push(revision.as_str());
+        }
+
+        let stderr = self
+            .jj(args)
+            .run_stderr()
+            .context("Failed executing jj simplify-parents")?;
+        Ok(stderr
+            .lines()
+            .find(|line| line.starts_with("Removed "))
+            .map(str::to_owned))
     }
 
     /// Absorb a change's diff into its mutable ancestors. Maps to `jj absorb --from <revision>`
@@ -598,7 +669,7 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
         let child = test_repo.commander.get_current_head()?;
 
         test_repo.commander.run_squash_into(
-            child.commit_id.as_str(),
+            std::slice::from_ref(&child.commit_id),
             parent.commit_id.as_str(),
             false,
         )?;
@@ -621,6 +692,125 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
     }
 
     #[test]
+    fn run_new_insert_keeps_working_copy() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        let base = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let child = test_repo.commander.get_current_head()?;
+
+        let inserted = test_repo.commander.run_new_insert(
+            std::slice::from_ref(&base.commit_id),
+            std::slice::from_ref(&child.commit_id),
+        )?;
+
+        // `@` did not move to the inserted change
+        let head = test_repo.commander.get_current_head()?;
+        assert_eq!(head.change_id, child.change_id);
+
+        // The returned change is the inserted one, between base and child
+        let parent = test_repo.commander.get_commit_parent(&head.commit_id)?;
+        assert_eq!(parent, inserted);
+        let grandparent = test_repo.commander.get_commit_parent(&inserted.commit_id)?;
+        assert_eq!(grandparent.change_id, base.change_id);
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_simplify_parents() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        // Merge of siblings A and B, then B is moved (alone) onto A: the
+        // merge is reparented to (A, base), where base is redundant since
+        // it's an ancestor of A.
+        let base = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let commit_a = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let commit_b = test_repo.commander.get_current_head()?;
+        test_repo
+            .commander
+            .run_new([commit_a.commit_id.as_str(), commit_b.commit_id.as_str()])?;
+        let merge = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_rebase(
+            "-r",
+            std::slice::from_ref(&commit_b.commit_id),
+            "-d",
+            std::slice::from_ref(&commit_a.commit_id),
+        )?;
+
+        let merge = test_repo
+            .commander
+            .get_change_head(&merge.change_id)?
+            .expect("merge should still exist");
+        let summary = test_repo
+            .commander
+            .run_simplify_parents(std::slice::from_ref(&merge.commit_id), false)?;
+        assert!(summary.is_some_and(|summary| summary.starts_with("Removed ")));
+
+        // The redundant base edge is gone; A is the only parent
+        let merge = test_repo
+            .commander
+            .get_change_head(&merge.change_id)?
+            .expect("merge should still exist");
+        let parents = test_repo
+            .commander
+            .jj([
+                "log",
+                "--no-graph",
+                "-T",
+                r#"change_id ++ "\n""#,
+                "-r",
+                &format!("{}-", merge.commit_id),
+            ])
+            .run()?;
+        assert_eq!(parents.trim(), commit_a.change_id.as_str());
+
+        // Running it again finds nothing to do
+        let summary = test_repo
+            .commander
+            .run_simplify_parents(std::slice::from_ref(&merge.commit_id), false)?;
+        assert_eq!(summary, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_squash_into_multiple_sources() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        let base = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        fs::write(test_repo.directory.path().join("a.txt"), "a")?;
+        let source_a = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        fs::write(test_repo.directory.path().join("b.txt"), "b")?;
+        let source_b = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let dest = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_squash_into(
+            &[source_a.commit_id.clone(), source_b.commit_id.clone()],
+            dest.commit_id.as_str(),
+            false,
+        )?;
+
+        // The destination received both sources' files
+        let dest = test_repo
+            .commander
+            .get_change_head(&dest.change_id)?
+            .expect("squash destination should still exist");
+        let files = test_repo
+            .commander
+            .jj(["file", "list", "-r", dest.commit_id.as_str()])
+            .run()?;
+        assert!(files.contains("a.txt") && files.contains("b.txt"));
+
+        Ok(())
+    }
+
+    #[test]
     fn run_rebase_multiple_destinations() -> Result<()> {
         let test_repo = TestRepo::new()?;
 
@@ -634,7 +824,7 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
 
         test_repo.commander.run_rebase(
             "-r",
-            moved.commit_id.as_str(),
+            std::slice::from_ref(&moved.commit_id),
             "-d",
             &[head_a.commit_id.clone(), head_b.commit_id.clone()],
         )?;

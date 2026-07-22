@@ -1,14 +1,14 @@
 /*! The rebase popup allows the user to pick a rebase configuration and
  start rebase, or cancel the opreation.
 
- The source is the change selected in the log panel; the targets are the
- marked changes. The UI looks like this
+ The sources are the changes picked up before the rebase key was pressed;
+ the targets are the destination pick. The UI looks like this
  ~~~
-    Source zsztoxlv 093ab72d
+    Source 093ab72d
     ( ) -s this and descendants
     ( ) -b whole branch
     (*) -r only one change moves
-    Target umrpslui 45a99ab4
+    Target 45a99ab4
     (*) -d rebase onto target as new branch
     ( ) -A rebase after target
     ( ) -B rebase before target
@@ -42,7 +42,6 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::StatefulWidget;
 
 use crate::commander::ids::CommitId;
-use crate::commander::log::Head;
 use crate::commander::new_commander;
 use crate::keybinds::rebase_popup::CutOption;
 use crate::keybinds::rebase_popup::PasteOption;
@@ -69,7 +68,7 @@ pub enum RebasePopupExit {
 pub struct RebasePopup {
     pub keybinds: Keybinds,
 
-    pub source_rev: Head,
+    pub source_revs: Vec<CommitId>,
     pub target_revs: Vec<CommitId>,
 
     pub source_mode: CutOption,
@@ -77,10 +76,10 @@ pub struct RebasePopup {
 }
 
 impl RebasePopup {
-    pub fn new(source_rev: Head, target_revs: Vec<CommitId>) -> Self {
+    pub fn new(source_revs: Vec<CommitId>, target_revs: Vec<CommitId>) -> Self {
         Self {
             keybinds: Keybinds::default(),
-            source_rev,
+            source_revs,
             target_revs,
             source_mode: CutOption::SingleRevision,
             target_mode: PasteOption::NewBranch,
@@ -106,7 +105,6 @@ impl RebasePopup {
 
     /// Run the command that the popup is currently configured to do
     fn run_command(&self) -> Result<()> {
-        let src_rev = self.source_rev.commit_id.as_str();
         let src_mode = match self.source_mode {
             CutOption::IncludeDescendants => "-s",
             CutOption::IncludeBranch => "-b",
@@ -117,7 +115,7 @@ impl RebasePopup {
             PasteOption::InsertAfter => "-A",
             PasteOption::InsertBefore => "-B",
         };
-        new_commander().run_rebase(src_mode, src_rev, tgt_mode, &self.target_revs)?;
+        new_commander().run_rebase(src_mode, &self.source_revs, tgt_mode, &self.target_revs)?;
         Ok(())
     }
 
@@ -172,8 +170,13 @@ impl Component for RebasePopup {
             .split(area);
 
         // Radio buttons for source
-        let src_change_id: String = self.source_rev.change_id.as_str().chars().take(8).collect();
-        let src_commit_id: String = self.source_rev.commit_id.as_str().chars().take(8).collect();
+        let source_label = match self.source_revs.as_slice() {
+            [single] => {
+                let commit_id: String = single.as_str().chars().take(8).collect();
+                format!("Source {commit_id}")
+            }
+            sources => format!("Source {} picked changes", sources.len()),
+        };
         let src_options = vec![
             "-s this and descendants",
             "-b whole branch",
@@ -184,10 +187,7 @@ impl Component for RebasePopup {
             CutOption::IncludeBranch => 1,
             CutOption::SingleRevision => 2,
         };
-        frame.render_widget(
-            Paragraph::new(Span::raw(format!("Source {src_change_id} {src_commit_id}"))),
-            chunks[0],
-        );
+        frame.render_widget(Paragraph::new(Span::raw(source_label)), chunks[0]);
         frame.render_stateful_widget(RadioButton::new(src_options), chunks[1], &mut src_select);
 
         // Radio buttons for target
@@ -196,7 +196,7 @@ impl Component for RebasePopup {
                 let commit_id: String = single.as_str().chars().take(8).collect();
                 format!("Target {commit_id}")
             }
-            targets => format!("Target {} marked changes", targets.len()),
+            targets => format!("Target {} picked changes", targets.len()),
         };
         let tgt_options = vec![
             "-d rebase as new branch",

@@ -11,12 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- Log tab: squash (`s`/`S`) and rebase (`Ctrl+r`) now operate on the *selected* change,
-  like every other command, instead of moving `@`. Squash sends the selected change into
-  its parent, or into the marked change if one is marked. Rebase moves the selected change
-  onto the marked change(s) — mark the destination(s) with `Space` first; multiple marks
-  rebase onto their merge. The old "squash @ into the selected change" is now: mark the
-  destination with `Space`, jump to @ with `@`, then `s`
+- Log tab: squash (`s`/`S`), rebase (`Ctrl+r`), and insert (`i`/`I`) now share one
+  "pick up, put down" gesture. The action key picks up the marked changes (or the
+  highlighted one if none are marked); then pick the destination — or anchors, for
+  insert — with the cursor (`Space` to mark several) and press `Enter` to execute
+  (`Esc` cancels). Squash pre-places the cursor on the parent, so `s` `Enter` is
+  `jj squash`; picking several destinations for rebase rebases onto their merge, and
+  picking up several changes rebases/squashes them all. The separate squash and insert
+  confirmation dialogs are gone — the final `Enter` is the confirmation
+- Inserting a new change (`i`) with exactly two picked changes where one is an ancestor
+  of the other skips the second phase and inserts between them immediately — the
+  after/before assignment is inferred from the ancestry, since the reverse would be a cycle
+- Inserting a new change (`i`) now passes `--no-edit`: `@` stays where it is instead of
+  moving to the inserted change, so the printed graph keeps its shape and an empty
+  undescribed `@` (e.g. a megamerge working set) isn't silently abandoned by `@` moving
+  away. The cursor is placed on the inserted change instead — press `e` there to edit
+  into it. (`n` still moves `@`, since starting new work there is its purpose)
 - The keybinds config section is now kebab-cased: `[blazingjj.keybinds.log_tab]` must be
   changed to `[blazingjj.keybinds.log-tab]`
 - Fork project and change name from "blazingjj" to "jjscope": the binary, crate, config
@@ -25,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Log tab: simplify parents (remove redundant parent edges) of the marked/selected
+  change(s) with `x` (`jj simplify-parents -r`), or of the change(s) and all their
+  descendants with `X` (`-s`)
 - Log tab: resolve all conflicts in the selected change with `v`/`V`
   (`jj resolve --tool :theirs`/`:ours`); files tab: same per-file. `v` keeps the
   rebased/squashed revision's version of each conflicted file, `V` keeps the

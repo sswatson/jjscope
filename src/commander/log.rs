@@ -360,6 +360,21 @@ impl Commander {
         )
     }
 
+    /// Get the head(s) among the given revisions: those that are not an
+    /// ancestor of any other. Maps to `jj log -r 'heads(<rev>|<rev>|...)'`
+    ///
+    /// A single result for a pair of revisions means the pair is comparable
+    /// (one is an ancestor of the other), and the result is the descendant.
+    pub(crate) fn get_heads_among(&self, commit_ids: &[CommitId]) -> Result<Vec<CommitId>> {
+        let revset = commit_ids.iter().map(CommitId::as_str).join("|");
+        Ok(self
+            .execute_jj_log(&format!("heads({revset})"), "commit_id ++ \"\\n\"")
+            .context("Failed getting heads among revisions")?
+            .lines()
+            .map(|line| CommitId(line.to_owned()))
+            .collect())
+    }
+
     /// Get all mutable revisions. Maps to `jj log -r 'mutable()'`
     ///
     /// Used to snapshot the candidate set before an operation like `jj absorb`
@@ -521,6 +536,34 @@ mod tests {
         assert_ne!(old_head, new_head);
 
         assert_eq!(new_head, test_repo.commander.get_head_latest(&old_head)?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_heads_among() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        let base = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let child = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let sibling = test_repo.commander.get_current_head()?;
+
+        // Comparable pair: one head, the descendant
+        let heads = test_repo
+            .commander
+            .get_heads_among(&[base.commit_id.clone(), child.commit_id.clone()])?;
+        assert_eq!(heads, [child.commit_id.clone()]);
+
+        // Incomparable pair: both are heads
+        let mut heads = test_repo
+            .commander
+            .get_heads_among(&[child.commit_id.clone(), sibling.commit_id.clone()])?;
+        heads.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let mut expected = [child.commit_id.clone(), sibling.commit_id.clone()];
+        expected.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        assert_eq!(heads, expected);
 
         Ok(())
     }

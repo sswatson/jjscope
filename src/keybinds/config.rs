@@ -57,6 +57,8 @@ pub struct LogTabKeybindsConfig {
     pub edit_change_ignore_immutable: Option<Keybind>,
     pub abandon: Option<Keybind>,
     pub absorb: Option<Keybind>,
+    pub simplify_parents: Option<Keybind>,
+    pub simplify_parents_descendants: Option<Keybind>,
     pub resolve: Option<Keybind>,
     pub resolve_destination: Option<Keybind>,
     pub undo: Option<Keybind>,
