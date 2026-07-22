@@ -58,7 +58,6 @@ struct ForgetBookmark {
 const DELETE_BRANCH_POPUP_ID: u16 = 1;
 const FORGET_BRANCH_POPUP_ID: u16 = 2;
 const NEW_POPUP_ID: u16 = 3;
-const EDIT_POPUP_ID: u16 = 4;
 
 /// Bookmarks tab. Shows bookmarks in main panel and selected bookmark current change in details panel.
 pub struct BookmarksTab<'a> {
@@ -81,8 +80,6 @@ pub struct BookmarksTab<'a> {
     describe_textarea: Option<TextArea<'a>>,
     describe_after_new: bool,
     describe_after_new_change: Option<ChangeId>,
-
-    edit_ignore_immutable: bool,
 
     popup: ConfirmDialogState,
     popup_tx: std::sync::mpsc::Sender<Listener>,
@@ -176,8 +173,6 @@ impl BookmarksTab<'_> {
             describe_after_new: false,
             describe_textarea: None,
             describe_after_new_change: None,
-
-            edit_ignore_immutable: false,
 
             popup: ConfirmDialogState::default(),
             popup_tx,
@@ -290,8 +285,10 @@ impl Component for BookmarksTab<'_> {
                 }
                 NEW_POPUP_ID => {
                     if let Some(BookmarkLine::Parsed { bookmark, .. }) = self.bookmark.as_ref() {
-                        new_commander().run_new([bookmark.to_string().as_str()])?;
-                        let head = new_commander().get_current_head()?;
+                        // `--no-edit` keeps @ where it is; the log tab opens
+                        // with the cursor on the new change instead
+                        let head =
+                            new_commander().run_new_no_edit([bookmark.to_string().as_str()])?;
                         if self.describe_after_new {
                             self.describe_after_new_change = Some(head.change_id);
                             self.describe_after_new = false;
@@ -301,14 +298,6 @@ impl Component for BookmarksTab<'_> {
                         } else {
                             return Ok(Some(AppAction::ViewLog(head)));
                         }
-                    }
-                }
-                EDIT_POPUP_ID => {
-                    if let Some(BookmarkLine::Parsed { bookmark, .. }) = self.bookmark.as_ref() {
-                        new_commander()
-                            .run_edit(&bookmark.to_string(), self.edit_ignore_immutable)?;
-                        let head = new_commander().get_current_head()?;
-                        return Ok(Some(AppAction::ViewLog(head)));
                     }
                 }
                 _ => {}
@@ -923,20 +912,13 @@ impl Component for BookmarksTab<'_> {
                                 ));
                             }
 
-                            self.popup = ConfirmDialogState::new(
-                                EDIT_POPUP_ID,
-                                Span::styled(" Edit ", Style::new().bold().cyan()),
-                                Text::from(vec![
-                                    Line::from("Are you sure you want to edit an existing change?"),
-                                    Line::from(format!("Bookmark: {bookmark}")),
-                                ]),
-                            );
-                            self.popup
-                                .with_yes_button(ButtonLabel::YES.clone())
-                                .with_no_button(ButtonLabel::NO.clone())
-                                .with_listener(Some(self.popup_tx.clone()))
-                                .open();
-                            self.edit_ignore_immutable = ignore_immutable;
+                            // No confirmation: editing into a change is a
+                            // frequent, cheap, and undoable action
+                            new_commander().run_edit(&bookmark.to_string(), ignore_immutable)?;
+                            let head = new_commander().get_current_head()?;
+                            return Ok(ComponentInputResult::HandledAction(AppAction::ViewLog(
+                                head,
+                            )));
                         }
                     }
                 }

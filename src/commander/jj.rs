@@ -57,10 +57,40 @@ fn parse_absorb_destinations(stderr: &str) -> Vec<String> {
 impl Commander {
     /// Create a new change after revisions, moving `@` into it.
     /// Maps to `jj new <revision>...`
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the UI uses run_new_no_edit; tests use this as a fixture"
+        )
+    )]
     #[instrument(level = "trace", skip(self, revisions))]
     pub fn run_new<'a, T: IntoIterator<Item = &'a str>>(&self, revisions: T) -> Result<()> {
         let args = ["new"].into_iter().chain::<T>(revisions);
         self.jj(args).run_void().context("Failed executing jj new")
+    }
+
+    /// Create a new change after revisions without moving `@`, and return it.
+    /// Maps to `jj new --no-edit <revision>...`
+    ///
+    /// `--no-edit` keeps `@` where it is: moving `@` drastically twists the
+    /// printed graph around the working copy, and moving it *off* an empty
+    /// undescribed change (e.g. a megamerge working set) would silently
+    /// abandon that change. Callers should put the cursor on the returned
+    /// change instead; `edit` from there is the compound action.
+    #[instrument(level = "trace", skip(self, revisions))]
+    pub fn run_new_no_edit<'a, T: IntoIterator<Item = &'a str>>(
+        &self,
+        revisions: T,
+    ) -> Result<Head> {
+        let args = ["new", "--no-edit"].into_iter().chain::<T>(revisions);
+        let stderr = self
+            .jj(args)
+            .run_stderr()
+            .context("Failed executing jj new")?;
+        let commit_prefix = parse_created_commit(&stderr)
+            .ok_or_else(|| anyhow!("jj new did not report the created commit"))?;
+        self.get_head(commit_prefix)
     }
 
     /// Create a new change inserted after and/or before revisions, without
@@ -679,6 +709,24 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
 
         // ...and the now-empty child was abandoned
         assert_eq!(test_repo.commander.get_change_head(&child.change_id)?, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_new_no_edit_keeps_working_copy() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        let base = test_repo.commander.get_current_head()?;
+        let created = test_repo
+            .commander
+            .run_new_no_edit([base.commit_id.as_str()])?;
+
+        // `@` did not move; the returned change is a new child of base
+        assert_eq!(test_repo.commander.get_current_head()?, base);
+        assert_ne!(created.change_id, base.change_id);
+        let parent = test_repo.commander.get_commit_parent(&created.commit_id)?;
+        assert_eq!(parent.change_id, base.change_id);
 
         Ok(())
     }

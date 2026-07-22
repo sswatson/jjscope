@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is a separate gesture on `B`
 - Log tab: `Shift+p` (`jj git push --all`) is removed — too much of a footgun for a
   single keypress; use the CLI when pushing everything is really intended
+- Edit (`e`/`E`, on the log and bookmarks tabs) no longer asks for confirmation: with
+  `n` no longer moving `@`, editing into a change is a frequent, cheap, and undoable
+  action, and the dialog made it feel like a dangerous one. The immutability guard for
+  plain `e` remains
 - Log tab: squash (`s`/`S`), rebase (`r`), and insert (`i`/`I`) now share one
   "pick up, put down" gesture. The action key picks up the marked changes (or the
   highlighted one if none are marked); then pick the destination — or anchors, for
@@ -27,11 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inserting a new change (`i`) with exactly two picked changes where one is an ancestor
   of the other skips the second phase and inserts between them immediately — the
   after/before assignment is inferred from the ancestry, since the reverse would be a cycle
-- Inserting a new change (`i`) now passes `--no-edit`: `@` stays where it is instead of
-  moving to the inserted change, so the printed graph keeps its shape and an empty
-  undescribed `@` (e.g. a megamerge working set) isn't silently abandoned by `@` moving
-  away. The cursor is placed on the inserted change instead — press `e` there to edit
-  into it. (`n` still moves `@`, since starting new work there is its purpose)
+- Creating changes (`n`/`N`, `i`, and `n` on the bookmarks tab) now passes `--no-edit`:
+  `@` stays where it is instead of moving to the created change, so the printed graph
+  keeps its shape around the working copy and an empty undescribed `@` (e.g. a megamerge
+  working set) isn't silently abandoned by `@` moving away. The cursor is placed on the
+  created change instead — press `e` there for the old compound behavior
 - The keybinds config section is now kebab-cased: `[blazingjj.keybinds.log_tab]` must be
   changed to `[blazingjj.keybinds.log-tab]`
 - Fork project and change name from "blazingjj" to "jjscope": the binary, crate, config

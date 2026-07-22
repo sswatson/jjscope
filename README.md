@@ -98,8 +98,9 @@ See all key mappings for the current tab with `?`.
 - Display different revset with `r` (`jj log -r`)
 - Change details panel diff format between color words (default) and Git (and diff tool if set) with `w`
 - Toggle details panel wrapping with `W`
-- Create new change after highlighted change with `n` (`jj new`)
-  - Create new change and describe with `N` (`jj new -m`)
+- Create new change after highlighted change with `n` (`jj new --no-edit`)
+  - `@` stays where it is; the cursor moves to the new change, and `e` edits into it
+  - Create new change and describe with `N`
 - Insert a new change between other changes with `i` (`jj new --no-edit -A -B`; `@` stays where it is)
   - Marking two changes where one is an ancestor of the other inserts between them immediately —
     the assignment is inferred, since the reverse would be a cycle

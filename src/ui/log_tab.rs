@@ -45,7 +45,6 @@ use crate::ui::utils::centered_rect_line_height;
 use crate::ui::utils::tabs_to_spaces;
 
 const NEW_POPUP_ID: u16 = 1;
-const EDIT_POPUP_ID: u16 = 2;
 const ABANDON_POPUP_ID: u16 = 3;
 const METAEDIT_UPDATE_CHANGE_ID_POPUP_ID: u16 = 5;
 const RESOLVE_POPUP_ID: u16 = 7;
@@ -135,8 +134,6 @@ pub struct LogTab<'a> {
     describe_textarea: Option<TextArea<'a>>,
     describe_after_new: bool,
 
-    edit_ignore_immutable: bool,
-
     metaedit_update_change_id_ignore_immutable: bool,
 
     resolve_keep_destination: bool,
@@ -224,8 +221,6 @@ impl<'a> LogTab<'a> {
 
             describe_textarea: None,
             describe_after_new: false,
-
-            edit_ignore_immutable: false,
 
             metaedit_update_change_id_ignore_immutable: false,
 
@@ -375,12 +370,14 @@ impl<'a> LogTab<'a> {
     // Execute new command, after self.popup returned
     fn execute_new(&mut self) -> Result<Option<AppAction>> {
         let commit_ids = self.log_panel.extract_and_clear_head_marks();
-        if commit_ids.is_empty() {
-            new_commander().run_new([self.head.commit_id.as_str()])?;
+        // `--no-edit` keeps @ where it is; the cursor moves to the new change
+        // instead, and `e` from there is the compound action
+        let new_head = if commit_ids.is_empty() {
+            new_commander().run_new_no_edit([self.head.commit_id.as_str()])?
         } else {
-            new_commander().run_new(commit_ids.iter().map(CommitId::as_str))?;
-        }
-        self.set_head(new_commander().get_current_head()?);
+            new_commander().run_new_no_edit(commit_ids.iter().map(CommitId::as_str))?
+        };
+        self.set_head(new_head);
         if self.describe_after_new {
             self.describe_after_new = false;
             let textarea = TextArea::default();
@@ -951,24 +948,13 @@ impl<'a> LogTab<'a> {
                     )));
                 }
 
-                let mut lines = vec![
-                    Line::from("Are you sure you want to edit an existing change?"),
-                    Line::from(format!("Change: {}", self.head.change_id.as_str())),
-                ];
-                if ignore_immutable {
-                    lines.push(Line::from("This change is immutable."))
-                }
-                self.popup = ConfirmDialogState::new(
-                    EDIT_POPUP_ID,
-                    Span::styled(" Edit ", Style::new().bold().cyan()),
-                    Text::from(lines).fg(Color::default()),
-                );
-                self.popup
-                    .with_yes_button(ButtonLabel::YES.clone())
-                    .with_no_button(ButtonLabel::NO.clone())
-                    .with_listener(Some(self.popup_tx.clone()))
-                    .open();
-                self.edit_ignore_immutable = ignore_immutable;
+                // No confirmation: with `n` no longer moving @, editing into
+                // a change is a frequent, cheap, and undoable action
+                new_commander().run_edit(self.head.commit_id.as_str(), ignore_immutable)?;
+                self.refresh_log_output();
+                return Ok(ComponentInputResult::HandledAction(AppAction::ChangeHead(
+                    self.head.clone(),
+                )));
             }
             LogTabEvent::MetaeditUpdateChangeId { ignore_immutable } => {
                 if self.head.immutable && !ignore_immutable {
@@ -1220,12 +1206,6 @@ impl Component for LogTab<'_> {
             match res.0 {
                 NEW_POPUP_ID => {
                     return self.execute_new();
-                }
-                EDIT_POPUP_ID => {
-                    new_commander()
-                        .run_edit(self.head.commit_id.as_str(), self.edit_ignore_immutable)?;
-                    self.refresh_log_output();
-                    return Ok(Some(AppAction::ChangeHead(self.head.clone())));
                 }
                 METAEDIT_UPDATE_CHANGE_ID_POPUP_ID => {
                     new_commander().run_metaedit_update_change_id(
