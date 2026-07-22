@@ -14,6 +14,7 @@ use tracing::instrument;
 
 use crate::commander::CommandError;
 use crate::commander::Commander;
+use crate::commander::InteractiveCommand;
 use crate::commander::ids::CommitId;
 use crate::commander::log::Head;
 use crate::env::DiffFormat;
@@ -172,6 +173,26 @@ impl Commander {
         }
 
         self.jj(args).run_void()
+    }
+
+    /// Build the invocation for resolving a revision's conflicts in the
+    /// configured merge editor (`ui.merge-editor`), one conflicted file at
+    /// a time. Maps to `jj resolve -r <revision> [<fileset>]`; with no
+    /// `path`, jj walks every conflicted file in the revision.
+    ///
+    /// Returns the command for the main loop to run with the terminal
+    /// handed over ([crate::commander::JjCommand::run_interactive]), since
+    /// merge editors are interactive programs.
+    pub fn resolve_interactive_command(revision: &str, path: Option<&str>) -> InteractiveCommand {
+        let mut args = vec!["resolve".to_owned(), "-r".to_owned(), revision.to_owned()];
+        if let Some(path) = path {
+            args.push(Self::get_file_revset(path));
+        }
+
+        InteractiveCommand {
+            args,
+            name: "Interactive resolve".to_owned(),
+        }
     }
 
     /// Get diff for file change in a change.

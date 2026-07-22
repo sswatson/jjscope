@@ -252,6 +252,31 @@ impl JjCommand<'_> {
         self
     }
 
+    /// Execute the command with the terminal handed over to it: stdin,
+    /// stdout, and stderr are all inherited, so jj can launch the user's
+    /// configured interactive editor (e.g. the diff editor behind
+    /// `jj squash -i`). The caller must leave TUI mode before calling and
+    /// re-enter it after. Only the exit status is available — the command's
+    /// output goes straight to the user's terminal.
+    pub fn run_interactive(self) -> Result<std::process::ExitStatus, CommandError> {
+        let mut command = Command::new(&self.commander.env.jj_bin);
+        command.args(&self.args);
+        // No --quiet and no --color override: jj's messages print to the
+        // real terminal in their interactive form. --no-pager still applies —
+        // a pager would fight the editor for the tty.
+        command.arg("--no-pager");
+
+        if let Some(jj_config_toml) = &self.commander.jj_config_toml {
+            for cfg in jj_config_toml {
+                command.args(["--config", cfg]);
+            }
+        }
+
+        command.current_dir(&self.commander.env.root);
+        command.envs(self.env_var.iter().cloned());
+        Ok(command.status()?)
+    }
+
     /// Execute the command and return its standard output.
     pub fn run(self) -> Result<String, CommandError> {
         let (stdout, _stderr) = self.execute(Stdio::piped())?;
@@ -351,6 +376,18 @@ impl RemoveEndLine for String {
         }
         self
     }
+}
+
+/// A jj invocation that must run with the real terminal handed over,
+/// because jj will launch the user's configured interactive editor.
+/// Built by [Commander] methods, carried through the UI as an
+/// [crate::ui::AppAction], and executed by the main loop via
+/// [JjCommand::run_interactive].
+pub struct InteractiveCommand {
+    /// Arguments to the jj binary.
+    pub args: Vec<String>,
+    /// Name for status messages, e.g. "Interactive squash".
+    pub name: String,
 }
 
 pub fn get_output_args(color: bool, quiet: bool) -> Vec<String> {

@@ -367,6 +367,17 @@ impl Commander {
             == "true")
     }
 
+    /// Check whether a revision has no changes.
+    /// Maps to `jj log -r <revision> -T empty`
+    #[instrument(level = "trace", skip(self))]
+    pub fn check_revision_empty(&self, revision: &str) -> Result<bool> {
+        Ok(self
+            .execute_jj_log_one(revision, "empty")
+            .with_context(|| format!("Failed checking if revision is empty: {revision}"))?
+            .remove_end_line()
+            == "true")
+    }
+
     /// Get bookmark head
     /// Maps to `jj log -r <bookmark>[@<remote>]`
     #[instrument(level = "trace", skip(self))]
@@ -614,6 +625,18 @@ mod tests {
         let test_repo = TestRepo::new()?;
 
         assert!(!(test_repo.commander.check_revision_immutable("@")?));
+
+        Ok(())
+    }
+
+    #[test]
+    fn check_revision_empty() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        assert!(test_repo.commander.check_revision_empty("@")?);
+
+        fs::write(test_repo.directory.path().join("f.txt"), "content")?;
+        assert!(!(test_repo.commander.check_revision_empty("@")?));
 
         Ok(())
     }

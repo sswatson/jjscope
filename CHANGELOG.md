@@ -44,6 +44,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Log tab: interactive squash and split, by handing the terminal to the user's
+  configured diff editor (`ui.diff-editor`). Pressing `s` again during the squash
+  gesture toggles interactive mode (`jj squash -i`), so `Enter` opens the diff editor
+  to pick the hunks that move; `-` splits the highlighted change in two (`jj split -r`),
+  picking the first half's hunks in the diff editor; `=` edits the highlighted change's
+  diff against its parents (`jj diffedit -r`), dropping deselected hunks from the change
+  and its descendants. The TUI suspends while the editor runs and refreshes in place when
+  it returns
+- Resolve conflicts in the configured merge editor (`ui.merge-editor`) with `m`
+  (`jj resolve -r`): on the log tab jj walks every conflicted file in the highlighted
+  change; on the files tab only the selected file is resolved. Complements `v`/`V`,
+  which keep one side wholesale without an editor
 - Log tab: rebase (`r`) now edits the parent set in place: the picked-up change's
   current parents appear marked with `✚`, and `Space` toggles any change in or out of
   the candidate parent set — adding and removing parents (e.g. megamerge branches) in a

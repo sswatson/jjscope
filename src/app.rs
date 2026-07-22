@@ -18,6 +18,7 @@ use ratatui::widgets::*;
 use tracing::info;
 use tracing::instrument;
 
+use crate::commander::InteractiveCommand;
 use crate::commander::new_commander;
 use crate::env::get_env;
 use crate::ui::AppAction;
@@ -60,6 +61,10 @@ pub struct App<'a> {
     pub bookmarks: Option<BookmarksTab<'a>>,
     pub popup: Option<Box<dyn Component>>,
     pub status_message: Option<String>,
+    /// An interactive jj command a component asked for. Parked here because
+    /// running it needs the terminal, which only the main loop owns; the
+    /// loop takes it after input handling.
+    pub pending_interactive: Option<InteractiveCommand>,
     pub stats: Stats,
 }
 
@@ -72,6 +77,7 @@ impl<'a> App<'a> {
             bookmarks: None,
             popup: None,
             status_message: None,
+            pending_interactive: None,
             stats: Stats {
                 start_time: Instant::now(),
             },
@@ -192,6 +198,9 @@ impl<'a> App<'a> {
                     let head = new_commander().get_current_head()?.clone();
                     self.get_log_tab()?.set_head(head);
                 };
+            }
+            AppAction::RunInteractive(command) => {
+                self.pending_interactive = Some(command);
             }
         }
 

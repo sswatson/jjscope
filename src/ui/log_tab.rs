@@ -17,6 +17,7 @@ use tui_confirm_dialog::ConfirmDialog;
 use tui_confirm_dialog::ConfirmDialogState;
 use tui_confirm_dialog::Listener;
 
+use crate::commander::Commander;
 use crate::commander::files::ConflictSide;
 use crate::commander::ids::CommitId;
 use crate::commander::log::Head;
@@ -83,10 +84,13 @@ enum PickState {
     BranchRebaseDestinations { sources: Vec<CommitId> },
     /// After the squash key: collecting the single destination. On entry the
     /// cursor is placed on the source's parent, so an immediate Enter gives
-    /// `jj squash` semantics.
+    /// `jj squash` semantics. Pressing the squash key again toggles
+    /// `interactive` (`jj squash -i`), which hands the terminal to the
+    /// user's diff editor to pick the hunks that move.
     SquashDestination {
         sources: Vec<CommitId>,
         ignore_immutable: bool,
+        interactive: bool,
     },
     /// After the insert-move key: collecting the `-A` (insert-after) anchors
     /// for the change being moved.
@@ -492,8 +496,17 @@ impl<'a> LogTab<'a> {
         self.pick_state = PickState::SquashDestination {
             sources,
             ignore_immutable,
+            interactive: false,
         };
         self.update_pick_title();
+    }
+
+    /// The squash key toggles hunk-by-hunk mode mid-gesture.
+    fn toggle_squash_interactive(&mut self) {
+        if let PickState::SquashDestination { interactive, .. } = &mut self.pick_state {
+            *interactive = !*interactive;
+            self.update_pick_title();
+        }
     }
 
     /// Pick up the `-A` (insert-after) anchors for a brand-new change; the
@@ -587,8 +600,15 @@ impl<'a> LogTab<'a> {
                 " Branch rebase: pick destination(s) (space: mark several, enter: apply, esc: cancel) "
                     .to_owned(),
             ),
-            PickState::SquashDestination { .. } => {
-                Some(" Squash: pick destination (enter: confirm, esc: cancel) ".to_owned())
+            PickState::SquashDestination { interactive, .. } => {
+                let what_moves = if *interactive {
+                    "chosen hunks"
+                } else {
+                    "everything"
+                };
+                Some(format!(
+                    " Squash [{what_moves}] (s: switch): pick destination (enter: confirm, esc: cancel) "
+                ))
             }
             PickState::InsertAfter { .. } => Some(
                 " Move: pick AFTER-anchors (space: mark several, enter: next, esc: cancel) "
@@ -678,6 +698,7 @@ impl<'a> LogTab<'a> {
             PickState::SquashDestination {
                 sources,
                 ignore_immutable,
+                interactive,
             } => {
                 let targets = self.take_picked_commits();
                 let [target] = targets.as_slice() else {
@@ -692,6 +713,23 @@ impl<'a> LogTab<'a> {
                 // Resolve the destination before squashing rewrites it, so the
                 // selection can follow it afterwards
                 let target_head = new_commander().get_head(target.as_str())?;
+
+                if interactive {
+                    // Put the cursor on the destination now; the post-command
+                    // refresh follows it through the rewrite
+                    self.set_head(target_head);
+                    return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+                        vec![
+                            AppAction::ChangeHead(self.head.clone()),
+                            AppAction::RunInteractive(Commander::squash_interactive_command(
+                                &sources,
+                                target.as_str(),
+                                ignore_immutable,
+                            )),
+                        ],
+                    )));
+                }
+
                 if let Err(err) =
                     new_commander().run_squash_into(&sources, target.as_str(), ignore_immutable)
                 {
@@ -944,6 +982,48 @@ impl<'a> LogTab<'a> {
             LogTabEvent::Squash { ignore_immutable } => {
                 self.start_squash(ignore_immutable);
             }
+            LogTabEvent::Split => {
+                if self.head.immutable {
+                    return Self::message_popup(
+                        "Split",
+                        "The change cannot be split because it is immutable.",
+                    );
+                }
+                // jj would happily "split" an empty change into two empty
+                // changes without ever opening the editor — catch it here
+                if new_commander().check_revision_empty(self.head.commit_id.as_str())? {
+                    return Self::message_popup(
+                        "Split",
+                        "The change is empty; there is nothing to split.",
+                    );
+                }
+                return Ok(ComponentInputResult::HandledAction(
+                    AppAction::RunInteractive(Commander::split_interactive_command(
+                        self.head.commit_id.as_str(),
+                    )),
+                ));
+            }
+            LogTabEvent::DiffEdit => {
+                if self.head.immutable {
+                    return Self::message_popup(
+                        "Diff edit",
+                        "The change cannot be edited because it is immutable.",
+                    );
+                }
+                // Like split: an empty change has no diff, so jj would open
+                // the editor on nothing (or not at all) — catch it here
+                if new_commander().check_revision_empty(self.head.commit_id.as_str())? {
+                    return Self::message_popup(
+                        "Diff edit",
+                        "The change is empty; there is no diff to edit.",
+                    );
+                }
+                return Ok(ComponentInputResult::HandledAction(
+                    AppAction::RunInteractive(Commander::diffedit_interactive_command(
+                        self.head.commit_id.as_str(),
+                    )),
+                ));
+            }
             LogTabEvent::EditChange { ignore_immutable } => {
                 if self.head.immutable && !ignore_immutable {
                     return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
@@ -1025,6 +1105,26 @@ impl<'a> LogTab<'a> {
             }
             LogTabEvent::ResolveConflicts { keep_destination } => {
                 return self.handle_resolve(keep_destination);
+            }
+            LogTabEvent::ResolveInEditor => {
+                if self.head.immutable {
+                    return Self::message_popup(
+                        "Resolve",
+                        "The conflicts cannot be resolved because the change is immutable.",
+                    );
+                }
+                if new_commander().get_conflicts(&self.head.commit_id)?.is_empty() {
+                    return Self::message_popup(
+                        "Resolve",
+                        "The change has no conflicts to resolve.",
+                    );
+                }
+                return Ok(ComponentInputResult::HandledAction(
+                    AppAction::RunInteractive(Commander::resolve_interactive_command(
+                        self.head.commit_id.as_str(),
+                        None,
+                    )),
+                ));
             }
             LogTabEvent::Absorb => {
                 let outcome = new_commander().run_absorb(self.head.commit_id.as_str())?;
@@ -1435,6 +1535,13 @@ impl Component for LogTab<'_> {
                     {
                         // The rebase key toggles what moves mid-gesture
                         self.toggle_rebase_descendants();
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    LogTabEvent::Squash { .. }
+                        if matches!(self.pick_state, PickState::SquashDestination { .. }) =>
+                    {
+                        // The squash key toggles interactive mode mid-gesture
+                        self.toggle_squash_interactive();
                         return Ok(ComponentInputResult::Handled);
                     }
                     _ => {}

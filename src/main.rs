@@ -40,8 +40,11 @@ mod keybinds;
 mod ui;
 use crate::app::App;
 use crate::commander::Commander;
+use crate::commander::InteractiveCommand;
+use crate::commander::new_commander;
 use crate::env::Env;
 use crate::env::set_env;
+use crate::ui::AppAction;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -171,7 +174,41 @@ fn run_app(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
         if should_stop {
             return Ok(());
         }
+
+        if let Some(command) = app.pending_interactive.take() {
+            run_interactive_command(terminal, app, command)?;
+        }
     }
+}
+
+/// Hand the terminal to a jj command that launches the user's interactive
+/// editor, then restore the TUI and refresh the current tab in place.
+fn run_interactive_command(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    command: InteractiveCommand,
+) -> Result<()> {
+    restore_terminal()?;
+    let status = new_commander().jj(&command.args).run_interactive();
+    enter_tui_mode()?;
+    // The child drew over our screen; repaint everything
+    terminal.clear()?;
+
+    let message = match status {
+        Ok(status) if status.success() => format!("{} finished | u: undo", command.name),
+        Ok(status) => match status.code() {
+            Some(code) => format!("{} aborted (exit {code})", command.name),
+            None => format!("{} aborted", command.name),
+        },
+        Err(err) => format!("{} failed: {err}", command.name),
+    };
+    app.handle_action(AppAction::SetStatusMessage(message))?;
+
+    // Refresh in place: focus() re-resolves the selected change through
+    // whatever rewrite the command just made, without jumping the cursor
+    // to @ the way AppAction::RefreshTab would.
+    app.get_or_init_current_tab()?.focus()?;
+    Ok(())
 }
 
 /// Let app process all input events in queue before returning
@@ -206,6 +243,16 @@ fn input_to_app(app: &mut App) -> Result<bool> {
 }
 
 fn setup_terminal() -> Result<DefaultTerminal> {
+    enter_tui_mode()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    Ok(DefaultTerminal::new(backend)?)
+}
+
+/// Put the terminal in TUI mode (raw mode, alternate screen, mouse and
+/// focus reporting). [restore_terminal] is the inverse; the pair also
+/// brackets interactive commands, which need the terminal back in its
+/// normal state.
+fn enter_tui_mode() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(
@@ -223,8 +270,7 @@ fn setup_terminal() -> Result<DefaultTerminal> {
         )?;
     }
 
-    let backend = CrosstermBackend::new(stdout);
-    Ok(DefaultTerminal::new(backend)?)
+    Ok(())
 }
 
 fn restore_terminal() -> Result<()> {

@@ -11,6 +11,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::Event;
 use ratatui::layout::Rect;
 
+use crate::commander::InteractiveCommand;
 use crate::commander::log::Head;
 
 /// Action commmands from component to application
@@ -22,6 +23,10 @@ pub enum AppAction {
     SetStatusMessage(String),
     Multiple(Vec<AppAction>),
     RefreshTab(),
+    /// Run a jj command that launches the user's interactive editor. The
+    /// main loop picks this up after input handling, suspends the TUI,
+    /// hands the terminal to the command, and refreshes on return.
+    RunInteractive(InteractiveCommand),
 }
 
 /// When a Component process an input event, it returns an ComponentInputResult

@@ -137,6 +137,13 @@ See all key mappings for the current tab with `?`.
   (or the highlighted one), then pick the destination and press `Enter`
   - The cursor starts on the parent, so `s` then `Enter` squashes into the parent (like bare `jj squash`)
   - Squash ignoring immutability with `S` (`jj squash --ignore-immutable`)
+  - Press `s` again during the gesture to toggle interactive mode (`jj squash -i`): on `Enter`
+    the configured diff editor opens to pick the hunks that move; the title shows which mode is active
+- Split the highlighted change with `-` (`jj split -r`): the configured diff editor opens
+  to pick the hunks for the first of the two resulting changes
+- Edit the highlighted change's diff with `=` (`jj diffedit -r`): the configured diff editor
+  opens on the change's diff against its parents; deselected hunks are dropped from the
+  change and its descendants (undo with `u`)
 - Rebase changes with `r` (`jj rebase -r`/`-s`): press `r` to pick up the marked changes
   (or the highlighted one), then edit the parent set and press `Enter`
   - The picked-up change's current parents appear marked with `✚`; `Space` toggles any
@@ -159,6 +166,8 @@ See all key mappings for the current tab with `?`.
 - Select current change with `@`
 - Resolve the selected file's conflict with `v`/`V` (`jj resolve --tool :theirs`/`:ours`)
   - `v` keeps the rebased/squashed revision's version; `V` keeps the rebase/squash destination's version
+  - `m` resolves in the configured merge editor (`jj resolve`), file by file on the log tab
+    or just the selected file on the files tab
 - Change details panel diff format between color words (default) and Git (and diff tool if set) with `w`
 - Toggle details panel wrapping with `W`
 

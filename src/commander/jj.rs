@@ -14,6 +14,7 @@ use tracing::instrument;
 
 use crate::commander::CommandError;
 use crate::commander::Commander;
+use crate::commander::InteractiveCommand;
 use crate::commander::bookmarks::Bookmark;
 use crate::commander::ids::ChangeId;
 use crate::commander::ids::CommitId;
@@ -240,6 +241,64 @@ impl Commander {
         self.jj(args)
             .run_void()
             .context("Failed executing jj squash")
+    }
+
+    /// Build the invocation for interactively squashing parts of the given
+    /// revisions into another; the user picks hunks in their configured
+    /// diff editor. Maps to `jj squash -i -u --from <rev>... --into <rev>`.
+    ///
+    /// Returns the command for the main loop to run with the terminal
+    /// handed over ([crate::commander::JjCommand::run_interactive]) — the diff editor needs
+    /// the real tty, so this can't run through the captured-output path.
+    pub fn squash_interactive_command(
+        from: &[CommitId],
+        into: &str,
+        ignore_immutable: bool,
+    ) -> InteractiveCommand {
+        let mut args = vec!["squash".to_owned(), "-i".to_owned(), "-u".to_owned()];
+        for from_rev in from {
+            args.push("--from".to_owned());
+            args.push(from_rev.as_str().to_owned());
+        }
+        args.push("--into".to_owned());
+        args.push(into.to_owned());
+        if ignore_immutable {
+            args.push("--ignore-immutable".to_owned());
+        }
+
+        InteractiveCommand {
+            args,
+            name: "Interactive squash".to_owned(),
+        }
+    }
+
+    /// Build the invocation for interactively splitting a revision in two;
+    /// the user picks the first half's hunks in their configured diff
+    /// editor. Maps to `jj split -r <revision>`.
+    ///
+    /// Returns the command for the main loop to run with the terminal
+    /// handed over ([crate::commander::JjCommand::run_interactive]), like
+    /// [Self::squash_interactive_command].
+    pub fn split_interactive_command(revision: &str) -> InteractiveCommand {
+        InteractiveCommand {
+            args: vec!["split".to_owned(), "-r".to_owned(), revision.to_owned()],
+            name: "Interactive split".to_owned(),
+        }
+    }
+
+    /// Build the invocation for editing a revision's diff against its
+    /// parents in the configured diff editor; deselected hunks are dropped
+    /// from the revision and, via the auto-rebase, from its descendants.
+    /// Maps to `jj diffedit -r <revision>`.
+    ///
+    /// Returns the command for the main loop to run with the terminal
+    /// handed over ([crate::commander::JjCommand::run_interactive]), like
+    /// [Self::squash_interactive_command].
+    pub fn diffedit_interactive_command(revision: &str) -> InteractiveCommand {
+        InteractiveCommand {
+            args: vec!["diffedit".to_owned(), "-r".to_owned(), revision.to_owned()],
+            name: "Interactive diff edit".to_owned(),
+        }
     }
 
     /// Remove redundant parent edges (parents that are also indirect

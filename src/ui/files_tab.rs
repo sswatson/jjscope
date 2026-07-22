@@ -10,6 +10,7 @@ use ratatui::widgets::*;
 use tracing::instrument;
 
 use crate::commander::CommandError;
+use crate::commander::Commander;
 use crate::commander::files::Conflict;
 use crate::commander::files::ConflictSide;
 use crate::commander::files::File;
@@ -215,6 +216,40 @@ impl FilesTab {
         Ok(None)
     }
 
+    /// Resolve the selected file's conflict in the configured merge editor
+    /// (`jj resolve`), with the same guards as [Self::resolve_file].
+    fn resolve_file_in_editor(&mut self) -> Result<Option<AppAction>> {
+        let popup = |title: &'static str, message: String| {
+            Some(AppAction::SetPopup(Some(Box::new(MessagePopup::new(
+                title, message,
+            )))))
+        };
+
+        if self.head.immutable {
+            return Ok(popup(
+                "Resolve",
+                "The conflict cannot be resolved because the change is immutable.".to_owned(),
+            ));
+        }
+        let Some(path) = self.file.as_ref().and_then(|file| file.path.clone()) else {
+            return Ok(None);
+        };
+        if !self
+            .conflicts_output
+            .iter()
+            .any(|conflict| conflict.path == path)
+        {
+            return Ok(popup(
+                "Resolve",
+                "The selected file has no conflict to resolve.".to_owned(),
+            ));
+        }
+
+        Ok(Some(AppAction::RunInteractive(
+            Commander::resolve_interactive_command(self.head.commit_id.as_str(), Some(&path)),
+        )))
+    }
+
     fn scroll_files(&mut self, scroll: isize) -> Result<()> {
         if let Ok(files) = self.files_output.as_ref() {
             let current_file_index = self.get_current_file_index();
@@ -238,8 +273,11 @@ impl FilesTab {
 
 impl Component for FilesTab {
     fn focus(&mut self) -> Result<()> {
-        self.is_current_head = self.head == new_commander().get_current_head()?;
+        // Re-resolve the head before comparing to @: if the head was just
+        // rewritten (e.g. by an interactive resolve), the stale commit id
+        // would spuriously compare unequal
         self.head = new_commander().get_head_latest(&self.head)?;
+        self.is_current_head = self.head == new_commander().get_current_head()?;
         self.refresh_files()?;
         self.refresh_diff()?;
         Ok(())
@@ -427,6 +465,11 @@ impl Component for FilesTab {
                         return Ok(ComponentInputResult::HandledAction(action));
                     }
                 }
+                KeyCode::Char('m') => {
+                    if let Some(action) = self.resolve_file_in_editor()? {
+                        return Ok(ComponentInputResult::HandledAction(action));
+                    }
+                }
                 KeyCode::Char('R') | KeyCode::F(5) => {
                     self.head = new_commander().get_head_latest(&self.head)?;
                     self.refresh_files()?;
@@ -453,6 +496,10 @@ impl Component for FilesTab {
                                     "V".to_owned(),
                                     "resolve conflict keeping the rebase/squash destination's version"
                                         .to_owned(),
+                                ),
+                                (
+                                    "m".to_owned(),
+                                    "resolve conflict in the merge editor".to_owned(),
                                 ),
                                 ("@".to_owned(), "view current change files".to_owned()),
                                 ("R/F5".to_owned(), "refresh the view".to_owned()),
