@@ -51,6 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   diff against its parents (`jj diffedit -r`), dropping deselected hunks from the change
   and its descendants. The TUI suspends while the editor runs and refreshes in place when
   it returns
+- Files tab: open the selected file in your editor with `Enter` (`ui.editor`, else
+  `$VISUAL`/`$EDITOR`, else `vi`). On `@` the live working-copy file is opened for
+  editing; on any other revision the file's content at that revision is materialized
+  from `jj file show` into a temp file and opened read-only (`-R` for vi-family
+  editors), since that content isn't on disk to edit in place. The TUI suspends while
+  the editor runs and refreshes in place when it returns
 - Resolve conflicts in the configured merge editor (`ui.merge-editor`) with `m`
   (`jj resolve -r`): on the log tab jj walks every conflicted file in the highlighted
   change; on the files tab only the selected file is resolved. Complements `v`/`V`,

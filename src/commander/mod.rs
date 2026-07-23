@@ -40,6 +40,7 @@ use ansi_to_tui::IntoText;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use tempfile::TempPath;
 use ratatui::style::Color;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -388,6 +389,44 @@ pub struct InteractiveCommand {
     pub args: Vec<String>,
     /// Name for status messages, e.g. "Interactive squash".
     pub name: String,
+}
+
+/// A request to open a file in the user's editor with the real terminal
+/// handed over. Unlike [InteractiveCommand] this runs an arbitrary editor
+/// program (not the jj binary). Built by [Commander] methods, carried
+/// through the UI as an [crate::ui::AppAction], and executed by the main
+/// loop via [EditorCommand::run].
+pub struct EditorCommand {
+    /// The editor program and its arguments, followed by the path to open.
+    /// e.g. `["nvim", "-R", "/path/to/file"]`.
+    pub argv: Vec<String>,
+    /// Name for status messages, e.g. the file being opened.
+    pub name: String,
+    /// A temp file to remove once the editor exits, if the content was
+    /// materialized from a non-`@` revision. `None` when editing the live
+    /// working-copy file, which must not be deleted.
+    pub cleanup: Option<TempPath>,
+}
+
+impl EditorCommand {
+    /// Run the editor with the terminal handed over: stdin, stdout, and
+    /// stderr are all inherited. The caller must leave TUI mode before
+    /// calling and re-enter it after. Any [Self::cleanup] temp file is
+    /// removed when the editor exits.
+    pub fn run(self) -> Result<std::process::ExitStatus, CommandError> {
+        let (program, args) = self
+            .argv
+            .split_first()
+            .expect("editor command must have at least a program");
+        let status = Command::new(program)
+            .args(args)
+            .current_dir(&get_env().root)
+            .status()?;
+        // Dropping the TempPath removes the file; hold it until the editor
+        // has exited so the content is still there while being viewed.
+        drop(self.cleanup);
+        Ok(status)
+    }
 }
 
 pub fn get_output_args(color: bool, quiet: bool) -> Vec<String> {

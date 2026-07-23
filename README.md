@@ -163,6 +163,10 @@ See all key mappings for the current tab with `?`.
 ### Files tab
 
 - Select current change with `@`
+- Open the selected file in your editor (`ui.editor`, else `$VISUAL`/`$EDITOR`) with `Enter`
+  - On `@` the live working-copy file is opened for editing
+  - On any other revision the file's content at that revision is opened read-only
+    (from `jj file show`), since that content isn't on disk to edit in place
 - Resolve the selected file's conflict with `v`/`V` (`jj resolve --tool :theirs`/`:ours`)
   - `v` keeps the rebased/squashed revision's version; `V` keeps the rebase/squash destination's version
   - `m` resolves in the configured merge editor (`jj resolve`), file by file on the log tab

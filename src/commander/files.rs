@@ -4,17 +4,22 @@
 This module has features to parse the diff output.
 It is mostly used in the [files_tab][crate::ui::files_tab] module.
 */
+use std::io::Write;
+use std::path::Path;
 use std::sync::LazyLock;
 
 use anyhow::Context;
 use anyhow::Result;
 use ratatui::style::Color;
 use regex::Regex;
+use tempfile::Builder;
 use tracing::instrument;
 
 use crate::commander::CommandError;
 use crate::commander::Commander;
+use crate::commander::EditorCommand;
 use crate::commander::InteractiveCommand;
+use crate::commander::RemoveEndLine;
 use crate::commander::ids::CommitId;
 use crate::commander::log::Head;
 use crate::env::DiffFormat;
@@ -279,6 +284,113 @@ impl Commander {
             path.replace("\\", "\\\\").replace('"', "\\\"")
         )
     }
+
+    /// The post-change path of a file, resolving a rename to its new name.
+    /// Returns `None` if there is no path (e.g. a blank line).
+    fn destination_path(current_file: &File) -> Option<&str> {
+        let path = current_file.path.as_deref()?;
+        if current_file.diff_type == Some(DiffType::Renamed)
+            && let Some(captures) = RENAME_REGEX.captures(path)
+        {
+            return captures.get(2).map(|m| m.as_str());
+        }
+        Some(path)
+    }
+
+    /// The editor command, resolved the way jj resolves it: the `ui.editor`
+    /// config, then `$VISUAL`, then `$EDITOR`, then a plain `vi` fallback.
+    /// Split on whitespace so a configured value like `"code --wait"` keeps
+    /// its arguments.
+    fn editor_argv(&self) -> Vec<String> {
+        let raw = self
+            .jj(["config", "get", "ui.editor"])
+            .run()
+            .ok()
+            .map(|value| value.remove_end_line())
+            .filter(|value| !value.is_empty())
+            .or_else(|| std::env::var("VISUAL").ok().filter(|v| !v.is_empty()))
+            .or_else(|| std::env::var("EDITOR").ok().filter(|v| !v.is_empty()))
+            .unwrap_or_else(|| "vi".to_owned());
+
+        raw.split_whitespace().map(String::from).collect()
+    }
+
+    /// Build the command that opens the selected file in the user's editor.
+    ///
+    /// When `is_current_head` is true the file lives on disk in the working
+    /// copy, so it is opened directly and edits are saved in place. For any
+    /// other revision the content is not on disk, so it is materialized from
+    /// `jj file show -r <rev> <path>` into a temp file and opened read-only
+    /// (`-R` for vi-family editors) — editing history in place is a separate
+    /// gesture (`jj edit`/`diffedit`), not what "open this file" means.
+    ///
+    /// Returns `None` for a row with no openable path (e.g. a blank line).
+    #[instrument(level = "trace", skip(self))]
+    pub fn open_file_command(
+        &self,
+        head: &Head,
+        current_file: &File,
+        is_current_head: bool,
+    ) -> Result<Option<EditorCommand>, CommandError> {
+        let Some(path) = Self::destination_path(current_file) else {
+            return Ok(None);
+        };
+
+        let mut argv = self.editor_argv();
+        let editor_name = argv.first().cloned().unwrap_or_default();
+
+        if is_current_head {
+            // The working-copy file on disk. Open it live; never delete it.
+            let full_path = Path::new(&self.env.root).join(path);
+            argv.push(full_path.to_string_lossy().into_owned());
+            return Ok(Some(EditorCommand {
+                argv,
+                name: format!("Open {path}"),
+                cleanup: None,
+            }));
+        }
+
+        // Not the working copy: materialize the revision's content to a temp
+        // file and open it read-only, so the editor shows exactly what the
+        // diff panel shows without pretending it is editable.
+        let contents = self
+            .jj(["file", "show", "-r", head.commit_id.as_str(), path])
+            .run()?;
+
+        let suffix = Path::new(path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| format!(".{ext}"))
+            .unwrap_or_default();
+        let mut temp = Builder::new()
+            .prefix("jjscope-")
+            .suffix(&suffix)
+            .tempfile()?;
+        temp.write_all(contents.as_bytes())?;
+        let temp_path = temp.into_temp_path();
+
+        if is_read_only_capable(&editor_name) {
+            argv.push("-R".to_owned());
+        }
+        argv.push(temp_path.to_string_lossy().into_owned());
+
+        Ok(Some(EditorCommand {
+            argv,
+            name: format!("View {path} @ {}", head.change_id),
+            cleanup: Some(temp_path),
+        }))
+    }
+}
+
+/// Whether `editor` accepts vi's `-R` read-only flag. Covers the vi family
+/// (vi/vim/nvim/view); anything else is opened without the flag rather than
+/// risk passing an argument it would treat as a filename.
+fn is_read_only_capable(editor: &str) -> bool {
+    let name = Path::new(editor)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(editor);
+    matches!(name, "vi" | "vim" | "nvim" | "view" | "vimr")
 }
 
 #[cfg(test)]
@@ -653,6 +765,126 @@ mod tests {
                 .run_resolve(head.commit_id.as_str(), None, ConflictSide::Source);
 
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    /// Pin `ui.editor` so [Commander::editor_argv] is deterministic in tests
+    /// regardless of the developer's `$EDITOR`/`ui.editor`.
+    fn with_editor(mut test_repo: TestRepo, editor: &str) -> TestRepo {
+        let mut cfg = test_repo.commander.jj_config_toml.take().unwrap_or_default();
+        cfg.push(format!(r#"ui.editor="{editor}""#));
+        test_repo.commander.jj_config_toml = Some(cfg);
+        test_repo
+    }
+
+    #[test]
+    fn open_file_command_current_head_opens_disk_path() -> Result<()> {
+        let test_repo = with_editor(TestRepo::new()?, "nvim");
+        let file_path = test_repo.directory.path().join("README");
+        fs::write(&file_path, b"AAA")?;
+
+        let head = test_repo.commander.get_current_head()?;
+        let file = File {
+            line: "A README".to_owned(),
+            path: Some("README".to_owned()),
+            diff_type: Some(DiffType::Added),
+        };
+
+        let command = test_repo
+            .commander
+            .open_file_command(&head, &file, true)?
+            .expect("a path should yield a command");
+
+        // Editing @: open the live on-disk file, no read-only flag, no cleanup
+        let disk_path = file_path.to_string_lossy().into_owned();
+        assert_eq!(command.argv, vec!["nvim".to_owned(), disk_path]);
+        assert!(command.cleanup.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_file_command_other_revision_is_read_only_temp() -> Result<()> {
+        let test_repo = with_editor(TestRepo::new()?, "nvim");
+        let file_path = test_repo.directory.path().join("README");
+
+        // Commit a version, then move on so the head we open is not @
+        fs::write(&file_path, b"first\n")?;
+        let committed = test_repo.commander.get_current_head()?;
+        test_repo.commander.jj(["new"]).run_void()?;
+        fs::write(&file_path, b"second\n")?;
+
+        let file = File {
+            line: "A README".to_owned(),
+            path: Some("README".to_owned()),
+            diff_type: Some(DiffType::Added),
+        };
+
+        let command = test_repo
+            .commander
+            .open_file_command(&committed, &file, false)?
+            .expect("a path should yield a command");
+
+        // Viewing another revision: read-only flag, a temp file (not the
+        // on-disk path), and a cleanup handle
+        assert_eq!(command.argv[0], "nvim");
+        assert_eq!(command.argv[1], "-R");
+        let opened = &command.argv[2];
+        assert!(opened.contains("jjscope-"), "unexpected path: {opened}");
+        assert!(opened.ends_with(".README") || opened.contains("jjscope-"));
+        assert!(command.cleanup.is_some());
+
+        // The temp file holds the *committed* revision's content, not @'s
+        let contents = fs::read_to_string(opened)?;
+        assert_eq!(contents, "first\n");
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_file_command_no_path_is_none() -> Result<()> {
+        let test_repo = with_editor(TestRepo::new()?, "nvim");
+        let head = test_repo.commander.get_current_head()?;
+        let file = File {
+            line: String::new(),
+            path: None,
+            diff_type: None,
+        };
+        assert!(
+            test_repo
+                .commander
+                .open_file_command(&head, &file, true)?
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn open_file_command_non_vi_editor_has_no_read_only_flag() -> Result<()> {
+        let test_repo = with_editor(TestRepo::new()?, "code --wait");
+        let file_path = test_repo.directory.path().join("README");
+        fs::write(&file_path, b"first\n")?;
+        let committed = test_repo.commander.get_current_head()?;
+        test_repo.commander.jj(["new"]).run_void()?;
+
+        let file = File {
+            line: "A README".to_owned(),
+            path: Some("README".to_owned()),
+            diff_type: Some(DiffType::Added),
+        };
+
+        let command = test_repo
+            .commander
+            .open_file_command(&committed, &file, false)?
+            .expect("a path should yield a command");
+
+        // "code --wait" splits into two argv entries; no -R is injected for a
+        // non-vi editor, and the temp path is appended last.
+        assert_eq!(command.argv[0], "code");
+        assert_eq!(command.argv[1], "--wait");
+        assert!(!command.argv.iter().any(|a| a == "-R"));
+        assert!(command.argv.last().unwrap().contains("jjscope-"));
 
         Ok(())
     }

@@ -174,6 +174,25 @@ impl FilesTab {
         Ok(())
     }
 
+    /// Open the selected file in the user's editor. When viewing `@` the
+    /// live working-copy file is opened for editing; for any other revision
+    /// the file's content at that revision is opened read-only. Returns the
+    /// action to run the editor, or a popup action on failure.
+    fn open_file(&mut self) -> Result<Option<AppAction>> {
+        let Some(current_file) = self.file.clone() else {
+            return Ok(None);
+        };
+
+        match new_commander().open_file_command(&self.head, &current_file, self.is_current_head) {
+            Ok(Some(command)) => Ok(Some(AppAction::OpenInEditor(command))),
+            Ok(None) => Ok(None),
+            Err(err) => Ok(Some(AppAction::SetPopup(Some(Box::new(MessagePopup::new(
+                "Can't open file",
+                err.to_string(),
+            )))))),
+        }
+    }
+
     /// Resolve the selected file's conflict by keeping one side wholesale.
     /// Returns a popup action on failure, `None` on success.
     fn resolve_file(&mut self, side: ConflictSide) -> Result<Option<AppAction>> {
@@ -444,6 +463,11 @@ impl Component for FilesTab {
                     }
                     self.set_head(&new_commander().get_current_head()?)?;
                 }
+                KeyCode::Enter => {
+                    if let Some(action) = self.open_file()? {
+                        return Ok(ComponentInputResult::HandledAction(action));
+                    }
+                }
                 KeyCode::Char('r') => {
                     if let Err(err) = self.restore_file() {
                         return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
@@ -485,6 +509,11 @@ impl Component for FilesTab {
                             vec![
                                 ("j/k".to_owned(), "scroll down/up".to_owned()),
                                 ("J/K".to_owned(), "scroll down by ½ page".to_owned()),
+                                (
+                                    "Enter".to_owned(),
+                                    "open file in editor (read-only for non-@ revisions)"
+                                        .to_owned(),
+                                ),
                                 ("x".to_owned(), "untrack file".to_owned()),
                                 ("r".to_owned(), "restore file".to_owned()),
                                 (

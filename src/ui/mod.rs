@@ -11,6 +11,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::Event;
 use ratatui::layout::Rect;
 
+use crate::commander::EditorCommand;
 use crate::commander::InteractiveCommand;
 use crate::commander::log::Head;
 
@@ -27,6 +28,10 @@ pub enum AppAction {
     /// main loop picks this up after input handling, suspends the TUI,
     /// hands the terminal to the command, and refreshes on return.
     RunInteractive(InteractiveCommand),
+    /// Open a file in the user's editor. Handled like [Self::RunInteractive]:
+    /// the main loop suspends the TUI, hands the terminal to the editor, and
+    /// refreshes on return.
+    OpenInEditor(EditorCommand),
 }
 
 /// When a Component process an input event, it returns an ComponentInputResult

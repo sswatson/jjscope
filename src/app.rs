@@ -18,6 +18,7 @@ use ratatui::widgets::*;
 use tracing::info;
 use tracing::instrument;
 
+use crate::commander::EditorCommand;
 use crate::commander::InteractiveCommand;
 use crate::commander::new_commander;
 use crate::env::get_env;
@@ -65,6 +66,9 @@ pub struct App<'a> {
     /// running it needs the terminal, which only the main loop owns; the
     /// loop takes it after input handling.
     pub pending_interactive: Option<InteractiveCommand>,
+    /// An editor invocation a component asked for. Parked here for the same
+    /// reason as [Self::pending_interactive]: running it needs the terminal.
+    pub pending_editor: Option<EditorCommand>,
     pub stats: Stats,
 }
 
@@ -78,6 +82,7 @@ impl<'a> App<'a> {
             popup: None,
             status_message: None,
             pending_interactive: None,
+            pending_editor: None,
             stats: Stats {
                 start_time: Instant::now(),
             },
@@ -201,6 +206,9 @@ impl<'a> App<'a> {
             }
             AppAction::RunInteractive(command) => {
                 self.pending_interactive = Some(command);
+            }
+            AppAction::OpenInEditor(command) => {
+                self.pending_editor = Some(command);
             }
         }
 

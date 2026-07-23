@@ -40,6 +40,7 @@ mod keybinds;
 mod ui;
 use crate::app::App;
 use crate::commander::Commander;
+use crate::commander::EditorCommand;
 use crate::commander::InteractiveCommand;
 use crate::commander::new_commander;
 use crate::env::Env;
@@ -178,6 +179,10 @@ fn run_app(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
         if let Some(command) = app.pending_interactive.take() {
             run_interactive_command(terminal, app, command)?;
         }
+
+        if let Some(command) = app.pending_editor.take() {
+            run_editor_command(terminal, app, command)?;
+        }
     }
 }
 
@@ -207,6 +212,35 @@ fn run_interactive_command(
     // Refresh in place: focus() re-resolves the selected change through
     // whatever rewrite the command just made, without jumping the cursor
     // to @ the way AppAction::RefreshTab would.
+    app.get_or_init_current_tab()?.focus()?;
+    Ok(())
+}
+
+/// Hand the terminal to the user's editor opening a file, then restore the
+/// TUI and refresh the current tab in place. Editing the working-copy file
+/// can change what jj sees (a new snapshot), so the refresh picks that up.
+fn run_editor_command(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    command: EditorCommand,
+) -> Result<()> {
+    let name = command.name.clone();
+    restore_terminal()?;
+    let status = command.run();
+    enter_tui_mode()?;
+    // The editor drew over our screen; repaint everything
+    terminal.clear()?;
+
+    let message = match status {
+        Ok(status) if status.success() => name,
+        Ok(status) => match status.code() {
+            Some(code) => format!("{name} (editor exit {code})"),
+            None => format!("{name} (editor interrupted)"),
+        },
+        Err(err) => format!("{name} failed: {err}"),
+    };
+    app.handle_action(AppAction::SetStatusMessage(message))?;
+
     app.get_or_init_current_tab()?.focus()?;
     Ok(())
 }
