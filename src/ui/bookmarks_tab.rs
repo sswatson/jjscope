@@ -341,10 +341,8 @@ impl Component for BookmarksTab<'_> {
                 }
                 NEW_POPUP_ID => {
                     if let Some(BookmarkLine::Parsed { bookmark, .. }) = self.bookmark.as_ref() {
-                        // `--no-edit` keeps @ where it is; the log tab opens
-                        // with the cursor on the new change instead
-                        let head =
-                            new_commander().run_new_no_edit([bookmark.to_string().as_str()])?;
+                        new_commander().run_new([bookmark.to_string().as_str()])?;
+                        let head = new_commander().get_current_head()?;
                         if self.describe_after_new {
                             self.describe_after_new_change = Some(head.change_id);
                             self.describe_after_new = false;

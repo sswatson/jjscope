@@ -374,14 +374,12 @@ impl<'a> LogTab<'a> {
     // Execute new command, after self.popup returned
     fn execute_new(&mut self) -> Result<Option<AppAction>> {
         let commit_ids = self.log_panel.extract_and_clear_head_marks();
-        // `--no-edit` keeps @ where it is; the cursor moves to the new change
-        // instead, and `e` from there is the compound action
-        let new_head = if commit_ids.is_empty() {
-            new_commander().run_new_no_edit([self.head.commit_id.as_str()])?
+        if commit_ids.is_empty() {
+            new_commander().run_new([self.head.commit_id.as_str()])?;
         } else {
-            new_commander().run_new_no_edit(commit_ids.iter().map(CommitId::as_str))?
-        };
-        self.set_head(new_head);
+            new_commander().run_new(commit_ids.iter().map(CommitId::as_str))?;
+        }
+        self.set_head(new_commander().get_current_head()?);
         if self.describe_after_new {
             self.describe_after_new = false;
             let textarea = TextArea::default();
