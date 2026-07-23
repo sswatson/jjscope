@@ -104,11 +104,27 @@ fn build_log_node_config(overrides: &[(char, &[&str])]) -> Option<String> {
         .filter(|(_, ids)| !ids.is_empty())
         .rev()
         .fold(fallback, |rest, (glyph, ids)| {
-            // Bare hex change/commit IDs are valid revset symbols on their
-            // own, so this avoids nesting string literals (e.g. via
-            // `commit_id("...")`) inside the outer `contained_in("...")`
-            // string, which would need careful escaping.
-            let revset = ids.iter().join("|");
+            // Bare hex commit IDs are valid revset symbols on their own,
+            // avoiding nested string literals (e.g. via `commit_id("...")`)
+            // inside the outer `contained_in("...")` string. A bare CHANGE ID
+            // is also a valid symbol -- until the change becomes divergent,
+            // at which point the symbol errors out ("Change ID ... is
+            // divergent") and takes the whole log template down with it.
+            // Wrap change IDs in `change_id(...)`, which selects every
+            // visible copy of the change instead -- exactly what a glyph
+            // override wants. Change IDs use jj's reverse-hex alphabet
+            // [k-z] while commit IDs are ordinary hex, so the two are
+            // distinguishable by charset.
+            let revset = ids
+                .iter()
+                .map(|id| {
+                    if !id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() && c >= 'k') {
+                        format!("change_id({id})")
+                    } else {
+                        (*id).to_string()
+                    }
+                })
+                .join("|");
             format!(r#"if(self.contained_in("{revset}"), "{glyph}", {rest})"#)
         });
 
@@ -468,6 +484,34 @@ mod tests {
         let commit_id = head.commit_id.as_str();
 
         let log = test_repo.commander.get_log(&None, &[('X', &[commit_id])])?;
+
+        assert!(log.graph.lines().next().unwrap().starts_with('X'));
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_log_node_config_wraps_change_ids() {
+        // Commit IDs (hex) stay bare; change IDs (jj's reverse-hex alphabet,
+        // k-z) get wrapped in change_id(...) so a DIVERGENT change -- where
+        // the bare symbol errors out -- can't take down the whole template.
+        let config = build_log_node_config(&[('X', &["deadbeef01", "norwwoxnxuyn"])]).unwrap();
+        assert!(
+            config.contains(r#"contained_in("deadbeef01|change_id(norwwoxnxuyn)")"#),
+            "unexpected template: {config}"
+        );
+    }
+
+    #[test]
+    fn get_log_node_override_with_change_id() -> Result<()> {
+        // Overrides keyed by CHANGE id (not commit id) must render too --
+        // they go through the change_id(...) wrapping path.
+        let test_repo = TestRepo::new()?;
+
+        let head = test_repo.commander.get_current_head()?;
+        let change_id = head.change_id.as_str();
+
+        let log = test_repo.commander.get_log(&None, &[('X', &[change_id])])?;
 
         assert!(log.graph.lines().next().unwrap().starts_with('X'));
 
