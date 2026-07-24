@@ -186,7 +186,11 @@ See all key mappings for the current tab with `?`.
 
 ### Bookmarks tab
 
-- Filter bookmarks by name with `/`
+- Search bookmarks with `/`, identical to the log tab: type a query (matches highlight as you
+  type), `Enter` jumps to the first match, `n`/`N` step to the next/previous match (wrapping),
+  `Esc` clears. Case-insensitive; matches the displayed bookmark text (name and remote) and
+  leaves non-matching bookmarks visible. While a search is active `n`/`N` navigate matches
+  instead of creating changes
 - Show bookmarks with all remotes with `a` (`jj bookmark list --all`)
 - Create a bookmark with `c` (`jj bookmark create`)
 - Rename a bookmark with `r` (`jj bookmark rename`)

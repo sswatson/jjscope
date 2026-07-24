@@ -50,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change filtered out of the current revset is simply not found. While a search is active
   `n`/`N` navigate matches instead of creating changes; clearing the search reverts them.
   Configurable as `search` under `[jjscope.keybinds.log-tab]`
+- Bookmarks tab: `/` is now the same vim-style search as the log tab (highlight as you type,
+  `Enter` to jump, `n`/`N` to navigate, `Esc` to clear; matches name and remote) rather than
+  a filter that hid non-matching bookmarks. Non-matching bookmarks stay visible
 - Log tab: interactive squash and split, by handing the terminal to the user's
   configured diff editor (`ui.diff-editor`). Pressing `s` again during the squash
   gesture toggles interactive mode (`jj squash -i`), so `Enter` opens the diff editor

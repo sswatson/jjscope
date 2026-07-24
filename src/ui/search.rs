@@ -9,8 +9,8 @@ This module holds the pieces that make that behavior identical across panes:
 
 * [SearchState] — the active query, set as the user types.
 * [highlight_matches] — restyle matched substrings in a rendered [Line].
-* [next_match_index] / [first_match_index_at_or_after] — index math for
-  navigating between matching positions.
+* [match_indices] / [next_match_index] / [first_match_index_at_or_after] —
+  index math for navigating a list of items by their displayed text.
 */
 
 use ratatui::prelude::*;
@@ -60,6 +60,21 @@ impl SearchState {
 /// against the selection background rather than blend into it.
 pub fn search_match_style() -> Style {
     Style::default().bg(Color::Yellow).fg(Color::Black)
+}
+
+/// The indices of `items` that match `query` (already lowercased), in order.
+/// `text_of` yields the displayed text of an item; matching is a
+/// case-insensitive substring test. An empty query yields no matches.
+pub fn match_indices<T>(items: &[T], query: &str, text_of: impl Fn(&T) -> String) -> Vec<usize> {
+    if query.is_empty() {
+        return vec![];
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| text_of(item).to_lowercase().contains(query))
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// Given the ordered list of matching positions and the current selection
@@ -305,6 +320,19 @@ mod tests {
         for i in 0..8 {
             assert!(!is_highlighted(&line, i));
         }
+    }
+
+    #[test]
+    fn match_indices_finds_case_insensitive_substrings() {
+        let items = vec!["alpha", "Beta apple", "gamma", "zeta APPLE"];
+        let matches = match_indices(&items, "apple", |s| s.to_string());
+        assert_eq!(matches, vec![1, 3]);
+    }
+
+    #[test]
+    fn match_indices_empty_query_is_empty() {
+        let items = vec!["a", "b"];
+        assert!(match_indices(&items, "", |s| s.to_string()).is_empty());
     }
 
     #[test]

@@ -29,6 +29,11 @@ use crate::ui::ComponentInputResult;
 use crate::ui::dialog::HelpPopup;
 use crate::ui::dialog::LoaderPopup;
 use crate::ui::dialog::MessagePopup;
+use crate::ui::search::SearchState;
+use crate::ui::search::first_match_index_at_or_after;
+use crate::ui::search::highlight_matches;
+use crate::ui::search::match_indices;
+use crate::ui::search::next_match_index;
 use crate::ui::panel::DetailsPanel;
 use crate::ui::panel::TextContent;
 use crate::ui::utils::PaneDivider;
@@ -66,8 +71,15 @@ pub struct BookmarksTab<'a> {
     bookmarks_height: u16,
 
     show_all: bool,
-    filter_query: String,
-    filter: Option<TextArea<'a>>,
+
+    /// Active vim-style search, shared with the log tab via
+    /// [crate::ui::search]. While set, matching bookmark lines are highlighted
+    /// and n/N navigate between them. Unlike the old filter, non-matching
+    /// bookmarks stay visible.
+    search: SearchState,
+    /// The `/` search input bar shown at the bottom of the bookmarks list
+    /// while typing a query. `None` when not searching.
+    search_textarea: Option<TextArea<'a>>,
 
     bookmark: Option<BookmarkLine>,
 
@@ -109,17 +121,12 @@ fn bookmark_lines_match(current_bookmark: &BookmarkLine, bookmark: &BookmarkLine
     }
 }
 
-fn bookmark_matches_filter(bookmark: &BookmarkLine, filter_query: &str) -> bool {
-    if filter_query.is_empty() {
-        return true;
-    }
-
-    let filter_query = filter_query.to_lowercase();
+/// The searchable text of a bookmark line: exactly what is displayed, so a
+/// `/` search matches what the user sees (mirrors the log tab).
+fn bookmark_search_text(bookmark: &BookmarkLine) -> String {
     match bookmark {
-        BookmarkLine::Parsed { bookmark, .. } => {
-            bookmark.to_string().to_lowercase().contains(&filter_query)
-        }
-        BookmarkLine::Unparsable(text) => text.to_lowercase().contains(&filter_query),
+        BookmarkLine::Parsed { bookmark, .. } => bookmark.to_string(),
+        BookmarkLine::Unparsable(text) => text.clone(),
     }
 }
 
@@ -187,8 +194,8 @@ impl BookmarksTab<'_> {
             bookmarks_height: 0,
 
             show_all,
-            filter_query: String::new(),
-            filter: None,
+            search: SearchState::new(),
+            search_textarea: None,
 
             bookmark_panel: DetailsPanel::new(),
             bookmark_output,
@@ -217,13 +224,12 @@ impl BookmarksTab<'_> {
         self.bookmarks_output = new_commander().get_bookmarks(self.show_all);
     }
 
-    fn filtered_bookmarks(&self) -> Vec<BookmarkLine> {
+    /// All bookmarks currently shown in the list. Search no longer hides
+    /// non-matching bookmarks (it highlights and navigates instead), so this
+    /// is simply the fetched list.
+    fn all_bookmarks(&self) -> Vec<BookmarkLine> {
         match self.bookmarks_output.as_ref() {
-            Ok(bookmarks_output) => bookmarks_output
-                .iter()
-                .filter(|bookmark| bookmark_matches_filter(bookmark, &self.filter_query))
-                .cloned()
-                .collect(),
+            Ok(bookmarks_output) => bookmarks_output.clone(),
             Err(_) => vec![],
         }
     }
@@ -245,16 +251,13 @@ impl BookmarksTab<'_> {
     }
 
     fn sync_selected_bookmark(&mut self) {
-        let filtered_bookmarks = self.filtered_bookmarks();
-        let filtered_bookmark_refs: Vec<&BookmarkLine> = filtered_bookmarks.iter().collect();
-        self.bookmark = match filtered_bookmarks.first() {
+        let bookmarks = self.all_bookmarks();
+        let bookmark_refs: Vec<&BookmarkLine> = bookmarks.iter().collect();
+        self.bookmark = match bookmarks.first() {
             None => None,
             Some(_)
-                if get_current_bookmark_index_in_list(
-                    self.bookmark.as_ref(),
-                    &filtered_bookmark_refs,
-                )
-                .is_some() =>
+                if get_current_bookmark_index_in_list(self.bookmark.as_ref(), &bookmark_refs)
+                    .is_some() =>
             {
                 self.bookmark.clone()
             }
@@ -264,14 +267,54 @@ impl BookmarksTab<'_> {
         self.refresh_bookmark();
     }
 
-    fn open_filter(&mut self) {
-        let mut textarea = TextArea::new(vec![self.filter_query.clone()]);
-        textarea.move_cursor(CursorMove::End);
-        self.filter = Some(textarea);
+    /// Open the `/` search bar. Highlighting updates live as the user types;
+    /// the selection only jumps on Enter (mirrors the log tab).
+    fn open_search(&mut self) {
+        let textarea = TextArea::default();
+        self.search.set_query("");
+        self.search_textarea = Some(textarea);
+    }
+
+    /// Move the selection to the first search match at or after the current
+    /// selection (wrapping). Returns the match count. Used on Enter.
+    fn select_first_match(&mut self) -> usize {
+        self.select_match(first_match_index_at_or_after)
+    }
+
+    /// Move the selection to the next/previous match, wrapping. Returns the
+    /// match count. Used by n/N.
+    fn select_adjacent_match(&mut self, forward: bool) -> usize {
+        self.select_match(|matches, current| next_match_index(matches, current, forward))
+    }
+
+    /// Shared match-navigation: compute matches over the visible list, ask
+    /// `pick` for the target index, and move the selection there.
+    fn select_match(
+        &mut self,
+        pick: impl Fn(&[usize], usize) -> Option<usize>,
+    ) -> usize {
+        let Some(query) = self.search.query() else {
+            return 0;
+        };
+        let bookmarks = self.all_bookmarks();
+        let matches = match_indices(&bookmarks, query, bookmark_search_text);
+        if matches.is_empty() {
+            return 0;
+        }
+        let bookmark_refs: Vec<&BookmarkLine> = bookmarks.iter().collect();
+        let current =
+            get_current_bookmark_index_in_list(self.bookmark.as_ref(), &bookmark_refs).unwrap_or(0);
+        if let Some(idx) = pick(&matches, current)
+            && let Some(bookmark) = bookmarks.get(idx)
+        {
+            self.bookmark = Some(bookmark.clone());
+            self.refresh_bookmark();
+        }
+        matches.len()
     }
 
     fn scroll_bookmarks(&mut self, scroll: isize) {
-        let bookmarks = self.filtered_bookmarks();
+        let bookmarks = self.all_bookmarks();
         if bookmarks.is_empty() {
             return;
         }
@@ -370,42 +413,18 @@ impl Component for BookmarksTab<'_> {
 
         // Draw bookmarks
         {
-            let filtered_bookmarks = self.filtered_bookmarks();
-            let filtered_bookmark_refs: Vec<&BookmarkLine> = filtered_bookmarks.iter().collect();
+            let all_bookmarks = self.all_bookmarks();
+            let bookmark_refs: Vec<&BookmarkLine> = all_bookmarks.iter().collect();
             let current_bookmark_index =
-                get_current_bookmark_index_in_list(self.bookmark.as_ref(), &filtered_bookmark_refs);
-            let show_filter = self.filter.is_some() || !self.filter_query.is_empty();
+                get_current_bookmark_index_in_list(self.bookmark.as_ref(), &bookmark_refs);
+            let search_query = self.search.query();
             let bookmark_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(if show_filter { 3 } else { 0 }),
-                    Constraint::Min(0),
-                ])
+                .constraints([Constraint::Min(0)])
                 .split(chunks[0]);
 
-            if show_filter {
-                let filter_block = Block::bordered()
-                    .title(Span::styled(
-                        " Filter bookmarks ",
-                        Style::new().bold().cyan(),
-                    ))
-                    .border_type(BorderType::Rounded)
-                    .border_style(if self.filter.is_some() {
-                        Style::default().fg(Color::Green)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    });
-                let filter_inner = filter_block.inner(bookmark_chunks[0]);
-                f.render_widget(filter_block, bookmark_chunks[0]);
-                if let Some(filter) = self.filter.as_ref() {
-                    f.render_widget(filter, filter_inner);
-                } else {
-                    f.render_widget(Paragraph::new(self.filter_query.as_str()), filter_inner);
-                }
-            }
-
             let bookmark_lines: Vec<Line> = match self.bookmarks_output.as_ref() {
-                Ok(_) => filtered_bookmarks
+                Ok(_) => all_bookmarks
                     .iter()
                     .enumerate()
                     .map(|(i, bookmark)| -> Result<Vec<Line>, ansi_to_tui::Error> {
@@ -428,6 +447,13 @@ impl Component for BookmarksTab<'_> {
                                             span.to_owned().bg(self.config.highlight_color())
                                         })
                                         .collect();
+                                }
+
+                                // Highlight the search query wherever it
+                                // appears (applied after the selection bg so
+                                // matches stay legible on the selected line).
+                                if let Some(query) = search_query {
+                                    highlight_matches(&mut line, query);
                                 }
 
                                 line
@@ -462,34 +488,21 @@ impl Component for BookmarksTab<'_> {
             };
 
             let lines = if bookmark_lines.is_empty() {
-                vec![
-                    Line::from(if self.filter_query.is_empty() {
-                        " No bookmarks"
-                    } else {
-                        " No bookmarks matching filter"
-                    })
-                    .fg(Color::DarkGray)
-                    .italic(),
-                ]
+                vec![Line::from(" No bookmarks").fg(Color::DarkGray).italic()]
             } else {
                 bookmark_lines
             };
 
-            let bookmarks_title = if self.filter_query.is_empty() {
-                " Bookmarks ".to_owned()
-            } else {
-                format!(" Bookmarks [{}] ", self.filter_query)
-            };
             let bookmarks_block = Block::bordered()
-                .title(bookmarks_title)
+                .title(" Bookmarks ")
                 .border_type(BorderType::Rounded);
-            self.bookmarks_height = bookmarks_block.inner(bookmark_chunks[1]).height;
-            let bookmark_count = filtered_bookmarks.len();
+            self.bookmarks_height = bookmarks_block.inner(bookmark_chunks[0]).height;
+            let bookmark_count = all_bookmarks.len();
             let bookmarks = List::new(lines).block(bookmarks_block).scroll_padding(3);
             *self.bookmarks_list_state.selected_mut() = current_bookmark_index;
             f.render_stateful_widget(
                 bookmarks,
-                bookmark_chunks[1],
+                bookmark_chunks[0],
                 &mut self.bookmarks_list_state,
             );
 
@@ -503,12 +516,40 @@ impl Component for BookmarksTab<'_> {
 
                 f.render_stateful_widget(
                     scrollbar,
-                    bookmark_chunks[1].inner(Margin {
+                    bookmark_chunks[0].inner(Margin {
                         vertical: 1,
                         horizontal: 0,
                     }),
                     &mut scrollbar_state,
                 );
+            }
+
+            // Draw the vim-style search bar over the bottom row of the list,
+            // identical to the log tab.
+            if let Some(search_textarea) = self.search_textarea.as_mut() {
+                let list_area = bookmark_chunks[0];
+                let bar = Rect {
+                    x: list_area.x + 1,
+                    y: list_area.y + list_area.height.saturating_sub(1),
+                    width: list_area.width.saturating_sub(2),
+                    height: 1,
+                };
+                f.render_widget(Clear, bar);
+                let prompt_width = 1u16;
+                let prompt = Rect {
+                    width: prompt_width.min(bar.width),
+                    ..bar
+                };
+                f.render_widget(
+                    Span::styled("/", Style::new().fg(Color::Yellow).bold()),
+                    prompt,
+                );
+                let input = Rect {
+                    x: bar.x + prompt_width,
+                    width: bar.width.saturating_sub(prompt_width),
+                    ..bar
+                };
+                f.render_widget(&*search_textarea, input);
             }
         }
 
@@ -843,38 +884,42 @@ impl Component for BookmarksTab<'_> {
             return Ok(ComponentInputResult::Handled);
         }
 
-        if let Some(filter) = self.filter.as_mut() {
+        if let Some(search_textarea) = self.search_textarea.as_mut() {
             if let Event::Key(key) = event {
                 if key.kind != KeyEventKind::Press {
                     return Ok(ComponentInputResult::Handled);
                 }
 
+                // Enter confirms the search (vim-style); Esc cancels it.
                 match key.code {
-                    KeyCode::Up => {
-                        self.scroll_bookmarks(-1);
-                        return Ok(ComponentInputResult::Handled);
-                    }
-                    KeyCode::Down => {
-                        self.scroll_bookmarks(1);
-                        return Ok(ComponentInputResult::Handled);
-                    }
                     KeyCode::Enter => {
-                        self.filter = None;
+                        let query = search_textarea.lines().join("");
+                        self.search_textarea = None;
+                        self.search.set_query(&query);
+                        if self.search.is_active() {
+                            let count = self.select_first_match();
+                            if count == 0 {
+                                return Ok(ComponentInputResult::HandledAction(
+                                    AppAction::SetStatusMessage(format!(
+                                        "No matches for \"{query}\""
+                                    )),
+                                ));
+                            }
+                        }
                         return Ok(ComponentInputResult::Handled);
                     }
                     KeyCode::Esc => {
-                        self.filter_query.clear();
-                        self.filter = None;
-                        self.sync_selected_bookmark();
+                        self.search_textarea = None;
+                        self.search.clear();
                         return Ok(ComponentInputResult::Handled);
                     }
                     _ => {}
                 }
             }
-
-            filter.input(event);
-            self.filter_query = filter.lines().join("");
-            self.sync_selected_bookmark();
+            // Any other key edits the query; update the live highlight.
+            search_textarea.input(event);
+            let query = search_textarea.lines().join("");
+            self.search.set_query(&query);
             return Ok(ComponentInputResult::Handled);
         }
 
@@ -890,6 +935,27 @@ impl Component for BookmarksTab<'_> {
                 }
 
                 return Ok(ComponentInputResult::Handled);
+            }
+
+            // While a search is active, n/N navigate matches instead of
+            // creating changes, and Esc clears the search. Context-sensitive,
+            // identical to the log tab.
+            if self.search.is_active() {
+                match key.code {
+                    KeyCode::Char('n') => {
+                        self.select_adjacent_match(true);
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    KeyCode::Char('N') => {
+                        self.select_adjacent_match(false);
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    KeyCode::Esc => {
+                        self.search.clear();
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    _ => {}
+                }
             }
 
             if self.bookmark_panel.input(key) {
@@ -919,7 +985,7 @@ impl Component for BookmarksTab<'_> {
                     self.sync_selected_bookmark();
                 }
                 KeyCode::Char('/') => {
-                    self.open_filter();
+                    self.open_search();
                     return Ok(ComponentInputResult::Handled);
                 }
                 KeyCode::Char('c') => {
@@ -1080,7 +1146,10 @@ impl Component for BookmarksTab<'_> {
                             vec![
                                 ("j/k".to_owned(), "scroll down/up".to_owned()),
                                 ("J/K".to_owned(), "scroll down by ½ page".to_owned()),
-                                ("/".to_owned(), "filter bookmarks".to_owned()),
+                                (
+                                    "/".to_owned(),
+                                    "search bookmarks (n/N: next/previous match)".to_owned(),
+                                ),
                                 ("a".to_owned(), "show all remotes".to_owned()),
                                 ("c".to_owned(), "create bookmark".to_owned()),
                                 ("r".to_owned(), "rename bookmark".to_owned()),
@@ -1130,36 +1199,61 @@ impl Component for BookmarksTab<'_> {
 #[cfg(test)]
 mod tests {
     use crate::commander::bookmarks::{Bookmark, BookmarkLine};
+    use crate::ui::search::match_indices;
 
-    use super::bookmark_matches_filter;
+    use super::bookmark_search_text;
 
-    #[test]
-    fn bookmark_filter_matches_name_case_insensitively() {
-        let bookmark = BookmarkLine::Parsed {
-            text: "feature/login".into(),
+    fn parsed(name: &str, remote: Option<&str>) -> BookmarkLine {
+        BookmarkLine::Parsed {
+            text: String::new(),
             bookmark: Bookmark {
-                name: "feature/login".into(),
-                remote: None,
+                name: name.into(),
+                remote: remote.map(Into::into),
                 present: true,
                 timestamp: 0,
             },
-        };
-
-        assert!(bookmark_matches_filter(&bookmark, "LOGIN"));
+        }
     }
 
     #[test]
-    fn bookmark_filter_matches_remote_name() {
-        let bookmark = BookmarkLine::Parsed {
-            text: "release@origin".into(),
-            bookmark: Bookmark {
-                name: "release".into(),
-                remote: Some("origin".into()),
-                present: true,
-                timestamp: 0,
-            },
-        };
+    fn search_text_includes_name_and_remote() {
+        assert_eq!(bookmark_search_text(&parsed("feature/login", None)), "feature/login");
+        assert_eq!(
+            bookmark_search_text(&parsed("release", Some("origin"))),
+            "release@origin"
+        );
+        assert_eq!(
+            bookmark_search_text(&BookmarkLine::Unparsable("weird line".into())),
+            "weird line"
+        );
+    }
 
-        assert!(bookmark_matches_filter(&bookmark, "origin"));
+    #[test]
+    fn search_matches_name_case_insensitively() {
+        let bookmarks = vec![parsed("feature/login", None), parsed("main", None)];
+        // Query is pre-lowercased by SearchState; pass lowercase here.
+        let matches = match_indices(&bookmarks, "login", bookmark_search_text);
+        assert_eq!(matches, vec![0]);
+    }
+
+    #[test]
+    fn search_matches_remote_name() {
+        let bookmarks = vec![
+            parsed("release", Some("origin")),
+            parsed("dev", Some("upstream")),
+        ];
+        let matches = match_indices(&bookmarks, "origin", bookmark_search_text);
+        assert_eq!(matches, vec![0]);
+    }
+
+    #[test]
+    fn search_matches_multiple_bookmarks() {
+        let bookmarks = vec![
+            parsed("apple-pie", None),
+            parsed("banana", None),
+            parsed("apple-cart", None),
+        ];
+        let matches = match_indices(&bookmarks, "apple", bookmark_search_text);
+        assert_eq!(matches, vec![0, 2]);
     }
 }
