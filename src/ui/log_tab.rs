@@ -1305,6 +1305,23 @@ impl<'a> LogTab<'a> {
                     self.head.clone(),
                 )));
             }
+            LogTabEvent::OpenTree => {
+                match new_commander().open_revision_tree_command(&self.head) {
+                    Ok(command) => {
+                        return Ok(ComponentInputResult::HandledAction(
+                            AppAction::OpenInEditor(command),
+                        ));
+                    }
+                    Err(err) => {
+                        return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                            Some(Box::new(MessagePopup::new(
+                                "Browse revision",
+                                format!("{err:#}"),
+                            ))),
+                        )));
+                    }
+                }
+            }
             LogTabEvent::CopyChangeId => {
                 // Copy change ID to clipboard using crossterm
                 let change_id = self.head.change_id.as_str();

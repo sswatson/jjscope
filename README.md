@@ -22,18 +22,21 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - Set a bookmark to selected change with `b`
   - Fetch/push with `f`/`p`
   - Squash changes with `s`/`S`: pick up, then pick the destination
+  - Browse the whole repo at the selected revision in your editor with `o`
   - Yank change ID/revision to the system clipboard with `y`/`Y`
 - Files
   - View files in current change and diff in side panel
   - See a change's files from the log tab with `Enter`
   - View conflicts list in current change
   - Toggle between color words and git diff with `w`
+  - Browse the whole repo at the shown revision in your editor with `o`
   - Untrack file with `x`
 - Bookmarks
   - View list of bookmarks, including from all remotes with `a`
   - Create with `c`, rename with `r`, delete with `d`, forget with `f`
   - Track bookmarks with `t`, untrack bookmarks with `T`
   - Create new change with `n`, edit change with `e`/`E`
+  - Browse the whole repo at a bookmark's revision in your editor with `o`
   - Push a single bookmark with `p`
 - Command log: View every command jjscope executes
 - Config: Configure jjscope with your jj config
@@ -95,6 +98,11 @@ See all key mappings for the current tab with `?`.
 
 - Select current change with `@`
 - View change files in files tab with `Enter`
+- Browse the whole repo as it existed at the highlighted revision with `o`: the revision's
+  file tree is extracted to a temporary directory and opened in your editor (`ui.editor`,
+  else `$VISUAL`/`$EDITOR`), with the editor's working directory set to that tree so file
+  pickers and `:grep` stay inside the revision. Opened read-only where the editor supports
+  it, since the temp tree is deleted when the editor exits
 - Search the visible log text with `/`, vim-style: type a query (matches highlight as you
   type), press `Enter` to jump to the first match, then `n`/`N` to step to the next/previous
   match (wrapping). `Esc` clears the search. Matching is case-insensitive and only covers
@@ -177,6 +185,9 @@ See all key mappings for the current tab with `?`.
   - On `@` the live working-copy file is opened for editing
   - On any other revision the file's content at that revision is opened read-only
     (from `jj file show`), since that content isn't on disk to edit in place
+- Browse the whole repo at the revision being shown with `o` (same as the log tab). The files
+  list only holds the files that revision *changed*, so this is how to reach everything else
+  at that revision
 - Resolve the selected file's conflict with `v`/`V` (`jj resolve --tool :theirs`/`:ours`)
   - `v` keeps the rebased/squashed revision's version; `V` keeps the rebase/squash destination's version
   - `m` resolves in the configured merge editor (`jj resolve`), file by file on the log tab
@@ -191,6 +202,7 @@ See all key mappings for the current tab with `?`.
   `Esc` clears. Case-insensitive; matches the displayed bookmark text (name and remote) and
   leaves non-matching bookmarks visible. While a search is active `n`/`N` navigate matches
   instead of creating changes
+- Browse the whole repo at the selected bookmark's revision with `o` (same as the log tab)
 - Show bookmarks with all remotes with `a` (`jj bookmark list --all`)
 - Create a bookmark with `c` (`jj bookmark create`)
 - Rename a bookmark with `r` (`jj bookmark rename`)

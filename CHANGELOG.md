@@ -43,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Browse the whole repo as it existed at a revision with `o`, on the log, files, and bookmarks
+  tabs. The revision's file tree is extracted to a temporary directory (via `git archive`
+  against jj's git object store) and opened in the configured editor, with the editor's
+  working directory set to the tree so file pickers, `:grep`, and relative paths stay inside
+  the revision. The tree opens read-only where the editor supports it (`-R` for the vi family)
+  and is deleted when the editor exits. On the files tab this reaches files the revision did
+  not change, which the files list — a diff summary — does not include. Works from secondary
+  workspaces and in non-colocated repos, since the object store is located by following jj's
+  own `.jj/repo` and `store/git_target` pointers. Configurable as `open-tree` under
+  `[jjscope.keybinds.log-tab]`
 - Log tab: vim-style search with `/`. Type a query — matches highlight live as you type —
   then `Enter` jumps to the first match and `n`/`N` step to the next/previous match,
   wrapping around; `Esc` clears the search. Matching is case-insensitive and covers only

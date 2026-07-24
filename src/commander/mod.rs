@@ -27,11 +27,13 @@ pub mod files;
 pub mod ids;
 pub mod jj;
 pub mod log;
+pub mod tree;
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 use std::string::FromUtf8Error;
@@ -40,6 +42,7 @@ use ansi_to_tui::IntoText;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use tempfile::TempDir;
 use tempfile::TempPath;
 use ratatui::style::Color;
 use ratatui::style::Stylize;
@@ -402,10 +405,27 @@ pub struct EditorCommand {
     pub argv: Vec<String>,
     /// Name for status messages, e.g. the file being opened.
     pub name: String,
-    /// A temp file to remove once the editor exits, if the content was
-    /// materialized from a non-`@` revision. `None` when editing the live
-    /// working-copy file, which must not be deleted.
-    pub cleanup: Option<TempPath>,
+    /// Temporary content to remove once the editor exits. `None` when
+    /// editing live working-copy files, which must not be deleted.
+    pub cleanup: Option<EditorCleanup>,
+    /// Directory to run the editor in. `None` uses the repo root; a
+    /// materialized revision tree sets this to the tree's root so relative
+    /// paths, file pickers, and `:grep` inside the editor stay in the tree.
+    pub working_dir: Option<PathBuf>,
+}
+
+/// Temporary content owned by an [EditorCommand], deleted when the editor
+/// exits. Holding the handle (rather than a path) means the cleanup happens
+/// even on early return.
+///
+/// The handles are never read: they exist so that dropping this value deletes
+/// the content, which is why the variants' fields look unused.
+#[expect(dead_code, reason = "handles are held for their Drop, not read")]
+pub enum EditorCleanup {
+    /// A single materialized file (one revision's version of one file).
+    File(TempPath),
+    /// A materialized revision tree.
+    Dir(TempDir),
 }
 
 impl EditorCommand {
@@ -418,12 +438,17 @@ impl EditorCommand {
             .argv
             .split_first()
             .expect("editor command must have at least a program");
+        let working_dir = self
+            .working_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(&get_env().root));
         let status = Command::new(program)
             .args(args)
-            .current_dir(&get_env().root)
+            .current_dir(working_dir)
             .status()?;
-        // Dropping the TempPath removes the file; hold it until the editor
-        // has exited so the content is still there while being viewed.
+        // Dropping the cleanup handle removes the temp file or directory;
+        // hold it until the editor has exited so the content is still there
+        // while being viewed.
         drop(self.cleanup);
         Ok(status)
     }

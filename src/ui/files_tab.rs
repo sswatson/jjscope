@@ -193,6 +193,21 @@ impl FilesTab {
         }
     }
 
+    /// Browse the whole repo as it existed at the revision being shown, by
+    /// extracting its file tree to a temp directory and opening that in the
+    /// user's editor. Complements [Self::open_file], which opens the single
+    /// selected file: the files list only holds the files this revision
+    /// *changed*, so browsing the tree is the way to reach everything else.
+    fn open_tree(&mut self) -> AppAction {
+        match new_commander().open_revision_tree_command(&self.head) {
+            Ok(command) => AppAction::OpenInEditor(command),
+            Err(err) => AppAction::SetPopup(Some(Box::new(MessagePopup::new(
+                "Browse revision",
+                format!("{err:#}"),
+            )))),
+        }
+    }
+
     /// Resolve the selected file's conflict by keeping one side wholesale.
     /// Returns a popup action on failure, `None` on success.
     fn resolve_file(&mut self, side: ConflictSide) -> Result<Option<AppAction>> {
@@ -468,6 +483,9 @@ impl Component for FilesTab {
                         return Ok(ComponentInputResult::HandledAction(action));
                     }
                 }
+                KeyCode::Char('o') => {
+                    return Ok(ComponentInputResult::HandledAction(self.open_tree()));
+                }
                 KeyCode::Char('r') => {
                     if let Err(err) = self.restore_file() {
                         return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
@@ -512,6 +530,11 @@ impl Component for FilesTab {
                                 (
                                     "Enter".to_owned(),
                                     "open file in editor (read-only for non-@ revisions)"
+                                        .to_owned(),
+                                ),
+                                (
+                                    "o".to_owned(),
+                                    "browse the whole repo at this revision in your editor"
                                         .to_owned(),
                                 ),
                                 ("x".to_owned(), "untrack file".to_owned()),

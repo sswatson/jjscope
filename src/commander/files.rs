@@ -17,6 +17,7 @@ use tracing::instrument;
 
 use crate::commander::CommandError;
 use crate::commander::Commander;
+use crate::commander::EditorCleanup;
 use crate::commander::EditorCommand;
 use crate::commander::InteractiveCommand;
 use crate::commander::RemoveEndLine;
@@ -301,7 +302,7 @@ impl Commander {
     /// config, then `$VISUAL`, then `$EDITOR`, then a plain `vi` fallback.
     /// Split on whitespace so a configured value like `"code --wait"` keeps
     /// its arguments.
-    fn editor_argv(&self) -> Vec<String> {
+    pub(crate) fn editor_argv(&self) -> Vec<String> {
         let raw = self
             .jj(["config", "get", "ui.editor"])
             .run()
@@ -347,6 +348,7 @@ impl Commander {
                 argv,
                 name: format!("Open {path}"),
                 cleanup: None,
+                working_dir: None,
             }));
         }
 
@@ -377,7 +379,8 @@ impl Commander {
         Ok(Some(EditorCommand {
             argv,
             name: format!("View {path} @ {}", head.change_id),
-            cleanup: Some(temp_path),
+            cleanup: Some(EditorCleanup::File(temp_path)),
+            working_dir: None,
         }))
     }
 }
@@ -385,7 +388,7 @@ impl Commander {
 /// Whether `editor` accepts vi's `-R` read-only flag. Covers the vi family
 /// (vi/vim/nvim/view); anything else is opened without the flag rather than
 /// risk passing an argument it would treat as a filename.
-fn is_read_only_capable(editor: &str) -> bool {
+pub(crate) fn is_read_only_capable(editor: &str) -> bool {
     let name = Path::new(editor)
         .file_name()
         .and_then(|n| n.to_str())

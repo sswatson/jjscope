@@ -1140,6 +1140,28 @@ impl Component for BookmarksTab<'_> {
                         )));
                     }
                 }
+                KeyCode::Char('o') => {
+                    if let Some(BookmarkLine::Parsed { bookmark, .. }) = self.bookmark.as_ref()
+                        && bookmark.present
+                    {
+                        let head = new_commander().get_bookmark_head(bookmark)?;
+                        match new_commander().open_revision_tree_command(&head) {
+                            Ok(command) => {
+                                return Ok(ComponentInputResult::HandledAction(
+                                    AppAction::OpenInEditor(command),
+                                ));
+                            }
+                            Err(err) => {
+                                return Ok(ComponentInputResult::HandledAction(
+                                    AppAction::SetPopup(Some(Box::new(MessagePopup::new(
+                                        "Browse revision",
+                                        format!("{err:#}"),
+                                    )))),
+                                ));
+                            }
+                        }
+                    }
+                }
                 KeyCode::Char('?') => {
                     return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
                         Some(Box::new(HelpPopup::new(
@@ -1156,6 +1178,11 @@ impl Component for BookmarksTab<'_> {
                                 ("d/f".to_owned(), "delete/forget bookmark".to_owned()),
                                 ("t/T".to_owned(), "track/untrack bookmark".to_owned()),
                                 ("Enter".to_owned(), "view in log".to_owned()),
+                                (
+                                    "o".to_owned(),
+                                    "browse the whole repo at this revision in your editor"
+                                        .to_owned(),
+                                ),
                                 ("n".to_owned(), "new from bookmark".to_owned()),
                                 ("N".to_owned(), "new and describe".to_owned()),
                                 ("e".to_owned(), "edit bookmark".to_owned()),

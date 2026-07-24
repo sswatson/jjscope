@@ -84,6 +84,7 @@ edit-revset = "ctrl+r"
 search = "/"
 set-bookmark = "b"
 open-files = "enter"
+open-tree = "o"
 copy-change-id = "y"
 copy-rev = "shift+y"
 
