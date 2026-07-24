@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Log tab: vim-style search with `/`. Type a query — matches highlight live as you type —
+  then `Enter` jumps to the first match and `n`/`N` step to the next/previous match,
+  wrapping around; `Esc` clears the search. Matching is case-insensitive and covers only
+  the text shown in the log view (descriptions, IDs, bookmarks, authors, dates), so a
+  change filtered out of the current revset is simply not found. While a search is active
+  `n`/`N` navigate matches instead of creating changes; clearing the search reverts them.
+  Configurable as `search` under `[jjscope.keybinds.log-tab]`
 - Log tab: interactive squash and split, by handing the terminal to the user's
   configured diff editor (`ui.diff-editor`). Pressing `s` again during the squash
   gesture toggles interactive mode (`jj squash -i`), so `Enter` opens the diff editor

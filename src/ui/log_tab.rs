@@ -5,6 +5,7 @@ use std::cmp::max;
 use anyhow::Result;
 use ratatui::crossterm::clipboard::CopyToClipboard;
 use ratatui::crossterm::event::Event;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::crossterm::event::KeyEventKind;
 use ratatui::crossterm::execute;
 use ratatui::prelude::*;
@@ -117,6 +118,10 @@ pub struct LogTab<'a> {
     /// The revset filter to apply to jj log
     log_revset_textarea: Option<TextArea<'a>>,
 
+    /// The vim-style `/` search input bar, shown at the bottom of the log
+    /// panel while the user is typing a query. `None` when not searching.
+    search_textarea: Option<TextArea<'a>>,
+
     /// The list of changes shown to the left
     log_panel: LogPanel<'a>,
 
@@ -212,6 +217,7 @@ impl<'a> LogTab<'a> {
 
         Ok(Self {
             log_revset_textarea: None,
+            search_textarea: None,
 
             log_panel: LogPanel::new()?,
 
@@ -610,6 +616,16 @@ impl<'a> LogTab<'a> {
         self.log_panel.title_override = None;
         // Un-bake any mark glyphs from the graph
         self.refresh_log_output();
+    }
+
+    /// Move the selection to the next (`forward`) or previous search match,
+    /// wrapping around, and sync the details panel. No-op if no search is
+    /// active or nothing matches.
+    fn navigate_search(&mut self, forward: bool) {
+        let count = self.log_panel.select_adjacent_match(forward);
+        if count > 0 {
+            self.sync_head_output();
+        }
     }
 
     fn update_pick_title(&mut self) {
@@ -1266,6 +1282,14 @@ impl<'a> LogTab<'a> {
                 self.log_revset_textarea = Some(textarea);
                 return Ok(ComponentInputResult::Handled);
             }
+            LogTabEvent::Search => {
+                // Start a fresh query. Highlighting updates live as the user
+                // types; the selection only jumps on Enter.
+                let textarea = TextArea::default();
+                self.log_panel.set_search_query("");
+                self.search_textarea = Some(textarea);
+                return Ok(ComponentInputResult::Handled);
+            }
             LogTabEvent::SetBookmark => {
                 return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
                     Some(Box::new(BookmarkSetPopup::new(
@@ -1396,6 +1420,36 @@ impl Component for LogTab<'_> {
         // Draw log
         self.log_panel.draw(f, chunks[0])?;
 
+        // Draw the vim-style search bar over the bottom row of the log panel
+        if let Some(search_textarea) = self.search_textarea.as_mut() {
+            let log_area = chunks[0];
+            // Sit on the bottom border row of the log panel, inset past the
+            // rounded corners.
+            let bar = Rect {
+                x: log_area.x + 1,
+                y: log_area.y + log_area.height.saturating_sub(1),
+                width: log_area.width.saturating_sub(2),
+                height: 1,
+            };
+            f.render_widget(Clear, bar);
+            // "/" prompt, then the input.
+            let prompt_width = 1u16;
+            let prompt = Rect {
+                width: prompt_width.min(bar.width),
+                ..bar
+            };
+            f.render_widget(
+                Span::styled("/", Style::new().fg(Color::Yellow).bold()),
+                prompt,
+            );
+            let input = Rect {
+                x: bar.x + prompt_width,
+                width: bar.width.saturating_sub(prompt_width),
+                ..bar
+            };
+            f.render_widget(&*search_textarea, input);
+        }
+
         // Draw change details
         if let Some(content) = self.commit_show_cache.get(&self.head_key) {
             self.head_panel
@@ -1520,6 +1574,42 @@ impl Component for LogTab<'_> {
             return Ok(ComponentInputResult::Handled);
         }
 
+        if let Some(search_textarea) = self.search_textarea.as_mut() {
+            if let Event::Key(key) = event {
+                // Enter confirms the search (vim-style); Esc cancels it.
+                match key.code {
+                    KeyCode::Enter => {
+                        let query = search_textarea.lines().join("");
+                        self.search_textarea = None;
+                        self.log_panel.set_search_query(&query);
+                        if self.log_panel.has_active_search() {
+                            let count = self.log_panel.select_first_match();
+                            self.sync_head_output();
+                            if count == 0 {
+                                return Ok(ComponentInputResult::HandledAction(
+                                    AppAction::SetStatusMessage(format!(
+                                        "No matches for \"{query}\""
+                                    )),
+                                ));
+                            }
+                        }
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    KeyCode::Esc => {
+                        self.search_textarea = None;
+                        self.log_panel.clear_search();
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    _ => {}
+                }
+            }
+            // Any other key edits the query; update the live highlight.
+            search_textarea.input(event);
+            let query = search_textarea.lines().join("");
+            self.log_panel.set_search_query(&query);
+            return Ok(ComponentInputResult::Handled);
+        }
+
         if let Some(log_revset_textarea) = self.log_revset_textarea.as_mut() {
             if let Event::Key(key) = event {
                 match self.keybinds.match_event(key) {
@@ -1566,6 +1656,30 @@ impl Component for LogTab<'_> {
                 }
 
                 return Ok(ComponentInputResult::Handled);
+            }
+
+            // While a search is active (query confirmed), n/N navigate matches
+            // instead of creating changes, and Esc clears the search. This is
+            // context-sensitive: with no active search, these keys behave
+            // normally.
+            if self.log_panel.has_active_search()
+                && matches!(self.pick_state, PickState::Idle)
+            {
+                match self.keybinds.match_event(key) {
+                    LogTabEvent::CreateNew { describe: false } => {
+                        self.navigate_search(true);
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    LogTabEvent::CreateNew { describe: true } => {
+                        self.navigate_search(false);
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    LogTabEvent::Cancel => {
+                        self.log_panel.clear_search();
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    _ => {}
+                }
             }
 
             if !matches!(self.pick_state, PickState::Idle) {

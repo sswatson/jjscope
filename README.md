@@ -95,6 +95,12 @@ See all key mappings for the current tab with `?`.
 
 - Select current change with `@`
 - View change files in files tab with `Enter`
+- Search the visible log text with `/`, vim-style: type a query (matches highlight as you
+  type), press `Enter` to jump to the first match, then `n`/`N` to step to the next/previous
+  match (wrapping). `Esc` clears the search. Matching is case-insensitive and only covers
+  what's shown in the log — a change present in the tree but filtered out of the view won't
+  be found, which is expected. While a search is active `n`/`N` navigate matches instead of
+  creating changes; once it's cleared they revert to new-change
 - Display different revset with `r` (`jj log -r`)
 - Change details panel diff format between color words (default) and Git (and diff tool if set) with `w`
 - Toggle details panel wrapping with `W`

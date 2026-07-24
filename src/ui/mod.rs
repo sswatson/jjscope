@@ -4,6 +4,7 @@ pub mod dialog;
 pub mod files_tab;
 pub mod log_tab;
 pub mod panel;
+pub mod search;
 pub mod styles;
 pub mod utils;
 use anyhow::Result;

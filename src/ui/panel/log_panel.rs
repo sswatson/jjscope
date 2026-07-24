@@ -26,6 +26,10 @@ use crate::keybinds::LogTabKeybinds;
 use crate::ui::AppAction;
 use crate::ui::Component;
 use crate::ui::ComponentInputResult;
+use crate::ui::search::SearchState;
+use crate::ui::search::first_match_index_at_or_after;
+use crate::ui::search::highlight_matches;
+use crate::ui::search::next_match_index;
 
 /**
     A panel that displays the output of jj log.
@@ -84,6 +88,11 @@ pub struct LogPanel<'a> {
 
     /// When set, shown as the panel title instead of the usual "Log"/"Log for: <revset>" title
     pub title_override: Option<String>,
+
+    /// Active vim-style search. While a query is set, lines whose text
+    /// contains it are highlighted, and n/N navigate between matching changes.
+    /// Shared with the bookmarks tab via [crate::ui::search].
+    search: SearchState,
 
     /// Area where panel was drawn. This includes the border.
     panel_rect: Rect,
@@ -171,6 +180,7 @@ impl<'a> LogPanel<'a> {
             absorbed_heads: HashSet::new(),
             rebased_heads: HashSet::new(),
             title_override: None,
+            search: SearchState::new(),
 
             panel_rect: Rect::ZERO,
 
@@ -233,10 +243,17 @@ impl<'a> LogPanel<'a> {
             .map(|(i, line)| {
                 let mut line = line.to_owned();
 
-                // Highlight lines that correspond to self.head
+                // Highlight lines that correspond to self.head first, so the
+                // search match (applied after) wins on the selected line and
+                // stays legible instead of being repainted by the selection.
                 if log_output.head_at(i) == Some(&self.head) {
                     set_bg(&mut line, self.config.highlight_color());
                 };
+
+                // Highlight the search query wherever it appears in the line.
+                if let Some(query) = self.search.query() {
+                    highlight_matches(&mut line, query);
+                }
 
                 line
             })
@@ -379,6 +396,105 @@ impl<'a> LogPanel<'a> {
         self.absorbed_heads.clear();
         self.rebased_heads.clear();
         self.refresh_log_output();
+    }
+
+    //
+    //  Search
+    //
+
+    /// Whether a search is currently active (a non-empty query is set).
+    pub fn has_active_search(&self) -> bool {
+        self.search.is_active()
+    }
+
+    /// Set the live search query used for highlighting as the user types.
+    /// An empty or whitespace-only query clears the search. Does not move
+    /// the selection — navigation happens on Enter / n / N.
+    pub fn set_search_query(&mut self, query: &str) {
+        self.search.set_query(query);
+    }
+
+    /// Clear any active search (query and highlights).
+    pub fn clear_search(&mut self) {
+        self.search.clear();
+    }
+
+    /// The heads that currently match the search query, in log (top-to-bottom)
+    /// order and de-duplicated. A head matches if any of its displayed lines
+    /// contains the query. Empty when there's no query or no match.
+    fn matching_heads(&self) -> Vec<Head> {
+        let Some(query) = self.search.query() else {
+            return vec![];
+        };
+        let Ok(log_output) = self.log_output.as_ref() else {
+            return vec![];
+        };
+
+        let mut matches: Vec<Head> = Vec::new();
+        for (i, line) in self.log_output_text.iter().enumerate() {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+                .to_lowercase();
+            if !text.contains(query) {
+                continue;
+            }
+            if let Some(head) = log_output.head_at(i)
+                && !matches.contains(head)
+            {
+                matches.push(head.clone());
+            }
+        }
+        matches
+    }
+
+    /// Move the selection to the first match at or after the current
+    /// selection (wrapping to the top). Used on Enter, right after the query
+    /// is set. Returns the number of matches found (0 if none).
+    pub fn select_first_match(&mut self) -> usize {
+        let matches = self.matching_heads();
+        let heads = self.log_heads();
+        let current = self.head_position(&heads);
+        let match_positions = self.match_positions(&matches, &heads);
+        if let Some(pos) = first_match_index_at_or_after(&match_positions, current)
+            && let Some(head) = heads.get(pos)
+        {
+            self.set_head(head.clone());
+        }
+        matches.len()
+    }
+
+    /// Move the selection to the next (`forward`) or previous match relative
+    /// to the current selection, wrapping around. Returns the number of
+    /// matches (0 if none).
+    pub fn select_adjacent_match(&mut self, forward: bool) -> usize {
+        let matches = self.matching_heads();
+        let heads = self.log_heads();
+        let current = self.head_position(&heads);
+        let match_positions = self.match_positions(&matches, &heads);
+        if let Some(pos) = next_match_index(&match_positions, current, forward)
+            && let Some(head) = heads.get(pos)
+        {
+            self.set_head(head.clone());
+        }
+        matches.len()
+    }
+
+    /// The index of the current selection within `heads` (0 if not found).
+    fn head_position(&self, heads: &[Head]) -> usize {
+        heads.iter().position(|h| h == &self.head).unwrap_or(0)
+    }
+
+    /// The positions (indices into `heads`) of the matching heads, ascending.
+    fn match_positions(&self, matches: &[Head], heads: &[Head]) -> Vec<usize> {
+        let mut positions: Vec<usize> = matches
+            .iter()
+            .filter_map(|h| heads.iter().position(|x| x == h))
+            .collect();
+        positions.sort_unstable();
+        positions
     }
 
     //
@@ -535,3 +651,4 @@ fn list_item_from_mouse_event(
     }
     Some(item_index)
 }
+
