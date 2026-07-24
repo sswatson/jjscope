@@ -47,10 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configured diff editor (`ui.diff-editor`). Pressing `s` again during the squash
   gesture toggles interactive mode (`jj squash -i`), so `Enter` opens the diff editor
   to pick the hunks that move; `-` splits the highlighted change in two (`jj split -r`),
-  picking the first half's hunks in the diff editor; `=` edits the highlighted change's
-  diff against its parents (`jj diffedit -r`), dropping deselected hunks from the change
-  and its descendants. The TUI suspends while the editor runs and refreshes in place when
-  it returns
+  picking the first half's hunks in the diff editor. The TUI suspends while the editor
+  runs and refreshes in place when it returns
+- Log tab: diff-edit a change against a chosen base with `=` (`jj diffedit`). `=` picks
+  up the change and starts a pick gesture with the cursor on its parent, so `=` then
+  `Enter` edits the change's diff against its parents as before (`jj diffedit -r`).
+  Pointing at another revision before `Enter` edits the change relative to that revision
+  instead (`jj diffedit --from <base> --to <change>`), so hunks can be dropped or restored
+  against any ancestor rather than only the parent. Deselected hunks are dropped from the
+  change and its descendants
 - Files tab: open the selected file in your editor with `Enter` (`ui.editor`, else
   `$VISUAL`/`$EDITOR`, else `vi`). On `@` the live working-copy file is opened for
   editing; on any other revision the file's content at that revision is materialized

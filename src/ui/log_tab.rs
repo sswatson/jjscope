@@ -103,6 +103,13 @@ enum PickState {
         moving: Option<CommitId>,
         after: Vec<CommitId>,
     },
+    /// After the diffedit key: collecting the single `--from` base to edit
+    /// `target` against. On entry the cursor is placed on `target`'s parent,
+    /// so an immediate Enter gives `jj diffedit -r target` semantics
+    /// (editing against the parent); moving the cursor elsewhere edits
+    /// `target` relative to that revision instead (`jj diffedit --from
+    /// <cursor> --to target`).
+    DiffEditFrom { target: CommitId },
 }
 
 /// Log tab. Shows `jj log` in main panel and shows selected change details of in details panel.
@@ -507,6 +514,33 @@ impl<'a> LogTab<'a> {
         }
     }
 
+    /// Pick up the change to diff-edit; the `--from` base is picked next,
+    /// with the cursor pre-placed on the change's parent so an immediate
+    /// Enter edits against the parent (`jj diffedit -r`). Diffedit operates
+    /// on a single revision, so the picked-up target is always the change
+    /// under the cursor, not a mark set.
+    fn start_diffedit(&mut self) -> Result<ComponentInputResult> {
+        if self.head.immutable {
+            return Self::message_popup(
+                "Diff edit",
+                "The change cannot be edited because it is immutable.",
+            );
+        }
+        // Like split: an empty change has no diff, so jj would open the
+        // editor on nothing (or not at all) — catch it here
+        if new_commander().check_revision_empty(self.head.commit_id.as_str())? {
+            return Self::message_popup("Diff edit", "The change is empty; there is no diff to edit.");
+        }
+
+        let target = self.head.commit_id.clone();
+        if let Ok(parent) = new_commander().get_commit_parent(&target) {
+            self.set_head(parent);
+        }
+        self.pick_state = PickState::DiffEditFrom { target };
+        self.update_pick_title();
+        Ok(ComponentInputResult::Handled)
+    }
+
     /// Pick up the `-A` (insert-after) anchors for a brand-new change; the
     /// `-B` (insert-before) anchors are picked next.
     ///
@@ -620,6 +654,10 @@ impl<'a> LogTab<'a> {
             ),
             PickState::InsertBefore { moving: None, .. } => Some(
                 " Insert: pick BEFORE-anchors (space: mark several, enter: confirm, esc: cancel) "
+                    .to_owned(),
+            ),
+            PickState::DiffEditFrom { .. } => Some(
+                " Diff edit: pick the base to edit against (enter: parent by default, esc: cancel) "
                     .to_owned(),
             ),
         };
@@ -780,6 +818,37 @@ impl<'a> LogTab<'a> {
                         )))
                     }
                 }
+            }
+            PickState::DiffEditFrom { target } => {
+                let picked = self.take_picked_commits();
+                let [from] = picked.as_slice() else {
+                    return Self::message_popup(
+                        "Diff edit",
+                        "Pick a single revision to edit against.",
+                    );
+                };
+                if *from == target {
+                    return Self::message_popup(
+                        "Diff edit",
+                        "The base cannot be the change being edited.",
+                    );
+                }
+                self.pick_state = PickState::Idle;
+                self.log_panel.title_override = None;
+
+                // Put the cursor on the edited change now; the post-command
+                // refresh follows it through the rewrite
+                let target_head = new_commander().get_head(target.as_str())?;
+                self.set_head(target_head);
+                Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+                    vec![
+                        AppAction::ChangeHead(self.head.clone()),
+                        AppAction::RunInteractive(Commander::diffedit_from_interactive_command(
+                            from.as_str(),
+                            target.as_str(),
+                        )),
+                    ],
+                )))
             }
         }
     }
@@ -1002,25 +1071,7 @@ impl<'a> LogTab<'a> {
                 ));
             }
             LogTabEvent::DiffEdit => {
-                if self.head.immutable {
-                    return Self::message_popup(
-                        "Diff edit",
-                        "The change cannot be edited because it is immutable.",
-                    );
-                }
-                // Like split: an empty change has no diff, so jj would open
-                // the editor on nothing (or not at all) — catch it here
-                if new_commander().check_revision_empty(self.head.commit_id.as_str())? {
-                    return Self::message_popup(
-                        "Diff edit",
-                        "The change is empty; there is no diff to edit.",
-                    );
-                }
-                return Ok(ComponentInputResult::HandledAction(
-                    AppAction::RunInteractive(Commander::diffedit_interactive_command(
-                        self.head.commit_id.as_str(),
-                    )),
-                ));
+                return self.start_diffedit();
             }
             LogTabEvent::EditChange { ignore_immutable } => {
                 if self.head.immutable && !ignore_immutable {

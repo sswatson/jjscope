@@ -256,17 +256,27 @@ impl Commander {
         }
     }
 
-    /// Build the invocation for editing a revision's diff against its
-    /// parents in the configured diff editor; deselected hunks are dropped
-    /// from the revision and, via the auto-rebase, from its descendants.
-    /// Maps to `jj diffedit -r <revision>`.
+    /// Build the invocation for editing a revision's content in the diff
+    /// editor relative to an arbitrary base, rather than against its parent.
+    /// Maps to `jj diffedit --from <from> --to <to>`: the diff from `from` to
+    /// `to` is shown, and editing the right side updates `to` (the picked-up
+    /// revision). Deselected hunks are dropped from `to` and, via the
+    /// auto-rebase, from its descendants. `--from <parent> --to <rev>` is
+    /// equivalent to `jj diffedit -r <rev>`, so this covers the plain
+    /// edit-against-parent case too.
     ///
     /// Returns the command for the main loop to run with the terminal
     /// handed over ([crate::commander::JjCommand::run_interactive]), like
     /// [Self::squash_interactive_command].
-    pub fn diffedit_interactive_command(revision: &str) -> InteractiveCommand {
+    pub fn diffedit_from_interactive_command(from: &str, to: &str) -> InteractiveCommand {
         InteractiveCommand {
-            args: vec!["diffedit".to_owned(), "-r".to_owned(), revision.to_owned()],
+            args: vec![
+                "diffedit".to_owned(),
+                "--from".to_owned(),
+                from.to_owned(),
+                "--to".to_owned(),
+                to.to_owned(),
+            ],
             name: "Interactive diff edit".to_owned(),
         }
     }
@@ -1211,5 +1221,17 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
         assert_eq!(remote_bookmarks.trim(), head.commit_id.as_str());
 
         Ok(())
+    }
+
+    #[test]
+    fn diffedit_from_maps_from_and_to() {
+        // The picked-up revision is `--to` (the one that gets updated), and
+        // the chosen base is `--from`. Guard that mapping: swapping them would
+        // silently edit the wrong revision.
+        let command = Commander::diffedit_from_interactive_command("basecommit", "targetcommit");
+        assert_eq!(
+            command.args,
+            vec!["diffedit", "--from", "basecommit", "--to", "targetcommit"]
+        );
     }
 }

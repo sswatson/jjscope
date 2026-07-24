@@ -140,9 +140,13 @@ See all key mappings for the current tab with `?`.
     the configured diff editor opens to pick the hunks that move; the title shows which mode is active
 - Split the highlighted change with `-` (`jj split -r`): the configured diff editor opens
   to pick the hunks for the first of the two resulting changes
-- Edit the highlighted change's diff with `=` (`jj diffedit -r`): the configured diff editor
-  opens on the change's diff against its parents; deselected hunks are dropped from the
-  change and its descendants (undo with `u`)
+- Edit the highlighted change's diff with `=` (`jj diffedit`): press `=` to pick up the
+  change, then pick the base to edit it against and press `Enter`. The cursor starts on the
+  change's parent, so `=` then `Enter` edits the diff against its parents (plain
+  `jj diffedit -r`); pointing at another revision first edits against that revision instead
+  (`jj diffedit --from <base> --to <change>`), letting you drop or restore changes relative
+  to any ancestor, not just the parent. The configured diff editor opens on the chosen diff;
+  deselected hunks are dropped from the change and its descendants (undo with `u`)
 - Rebase changes with `r` (`jj rebase -r`/`-s`): press `r` to pick up the marked changes
   (or the highlighted one), then edit the parent set and press `Enter`
   - The picked-up change's current parents appear marked with `✚`; `Space` toggles any
