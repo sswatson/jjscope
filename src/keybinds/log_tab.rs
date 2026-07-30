@@ -6,6 +6,7 @@ use super::Shortcut;
 use super::config::KeybindsConfig;
 use super::config::LogTabKeybindsConfig;
 use super::keybinds_store::KeybindsStore;
+use crate::env::DescriptionTransform;
 use crate::make_keybinds_help;
 use crate::set_keybinds;
 use crate::update_keybinds;
@@ -35,25 +36,42 @@ pub enum LogTabEvent {
     ToggleDiffFormat,
 
     Refresh,
-    CreateNew { describe: bool },
+    CreateNew {
+        describe: bool,
+    },
     InsertNew,
     InsertMove,
     Duplicate,
     Rebase,
     RebaseBranch,
-    Squash { ignore_immutable: bool },
+    Squash {
+        ignore_immutable: bool,
+    },
     Split,
     DiffEdit,
-    EditChange { ignore_immutable: bool },
+    EditChange {
+        ignore_immutable: bool,
+    },
     Abandon,
     Absorb,
-    SimplifyParents { include_descendants: bool },
-    ResolveConflicts { keep_destination: bool },
+    SimplifyParents {
+        include_descendants: bool,
+    },
+    ResolveConflicts {
+        keep_destination: bool,
+    },
     ResolveInEditor,
     Undo,
     Redo,
-    MetaeditUpdateChangeId { ignore_immutable: bool },
+    MetaeditUpdateChangeId {
+        ignore_immutable: bool,
+    },
     Describe,
+    /// Apply the user-configured description transform at this index in
+    /// `jjscope.description-transforms`.
+    TransformDescription {
+        index: usize,
+    },
     EditRevset,
     Search,
     SetBookmark,
@@ -63,7 +81,9 @@ pub enum LogTabEvent {
     CopyRev,
 
     Push,
-    Fetch { all_remotes: bool },
+    Fetch {
+        all_remotes: bool,
+    },
 
     OpenHelp,
 
@@ -155,6 +175,16 @@ impl LogTabKeybinds {
         }
     }
 
+    /// Bind each configured description transform to its own key. Registered
+    /// after the rest of the config so that an explicit transform key wins over
+    /// a built-in binding on the same shortcut.
+    pub fn extend_from_description_transforms(&mut self, transforms: &[DescriptionTransform]) {
+        for (index, transform) in transforms.iter().enumerate() {
+            self.keys
+                .add_action(transform.key, LogTabEvent::TransformDescription { index });
+        }
+    }
+
     fn extend_from_log_tab_config(&mut self, config: &LogTabKeybindsConfig) {
         update_keybinds!(
             self.keys,
@@ -206,6 +236,34 @@ impl LogTabKeybinds {
             LogTabEvent::OpenHelp => config.open_help,
         );
     }
+    /// Help rows for the configured description transforms, listed after the
+    /// built-in bindings since they are user-defined.
+    pub fn make_description_transforms_help(
+        &self,
+        transforms: &[DescriptionTransform],
+    ) -> Vec<(String, String)> {
+        transforms
+            .iter()
+            .enumerate()
+            .map(|(index, transform)| {
+                let shortcuts = self
+                    .keys
+                    .get_shortcuts(LogTabEvent::TransformDescription { index })
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                (
+                    shortcuts,
+                    format!(
+                        "{}: set description to \"{}\"",
+                        transform.name, transform.template
+                    ),
+                )
+            })
+            .collect()
+    }
+
     pub fn make_main_panel_help(&self) -> Vec<(String, String)> {
         make_keybinds_help!(
             self.keys,

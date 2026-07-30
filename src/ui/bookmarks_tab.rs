@@ -29,13 +29,13 @@ use crate::ui::ComponentInputResult;
 use crate::ui::dialog::HelpPopup;
 use crate::ui::dialog::LoaderPopup;
 use crate::ui::dialog::MessagePopup;
+use crate::ui::panel::DetailsPanel;
+use crate::ui::panel::TextContent;
 use crate::ui::search::SearchState;
 use crate::ui::search::first_match_index_at_or_after;
 use crate::ui::search::highlight_matches;
 use crate::ui::search::match_indices;
 use crate::ui::search::next_match_index;
-use crate::ui::panel::DetailsPanel;
-use crate::ui::panel::TextContent;
 use crate::ui::utils::PaneDivider;
 use crate::ui::utils::centered_rect;
 use crate::ui::utils::centered_rect_line_height;
@@ -289,10 +289,7 @@ impl BookmarksTab<'_> {
 
     /// Shared match-navigation: compute matches over the visible list, ask
     /// `pick` for the target index, and move the selection there.
-    fn select_match(
-        &mut self,
-        pick: impl Fn(&[usize], usize) -> Option<usize>,
-    ) -> usize {
+    fn select_match(&mut self, pick: impl Fn(&[usize], usize) -> Option<usize>) -> usize {
         let Some(query) = self.search.query() else {
             return 0;
         };
@@ -1225,10 +1222,10 @@ impl Component for BookmarksTab<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::commander::bookmarks::{Bookmark, BookmarkLine};
-    use crate::ui::search::match_indices;
-
     use super::bookmark_search_text;
+    use crate::commander::bookmarks::Bookmark;
+    use crate::commander::bookmarks::BookmarkLine;
+    use crate::ui::search::match_indices;
 
     fn parsed(name: &str, remote: Option<&str>) -> BookmarkLine {
         BookmarkLine::Parsed {
@@ -1244,7 +1241,10 @@ mod tests {
 
     #[test]
     fn search_text_includes_name_and_remote() {
-        assert_eq!(bookmark_search_text(&parsed("feature/login", None)), "feature/login");
+        assert_eq!(
+            bookmark_search_text(&parsed("feature/login", None)),
+            "feature/login"
+        );
         assert_eq!(
             bookmark_search_text(&parsed("release", Some("origin"))),
             "release@origin"

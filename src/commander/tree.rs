@@ -110,10 +110,7 @@ impl Commander {
         // Hand git's stdout pipe straight to tar, so the kernel streams the
         // archive between them: no copy loop to deadlock or break, and a large
         // tree is never held in memory.
-        let archive_stdout = archive
-            .stdout
-            .take()
-            .expect("git archive stdout was piped");
+        let archive_stdout = archive.stdout.take().expect("git archive stdout was piped");
         let extract = Command::new("tar")
             .arg("-x")
             .arg("-C")

@@ -186,10 +186,9 @@ impl FilesTab {
         match new_commander().open_file_command(&self.head, &current_file, self.is_current_head) {
             Ok(Some(command)) => Ok(Some(AppAction::OpenInEditor(command))),
             Ok(None) => Ok(None),
-            Err(err) => Ok(Some(AppAction::SetPopup(Some(Box::new(MessagePopup::new(
-                "Can't open file",
-                err.to_string(),
-            )))))),
+            Err(err) => Ok(Some(AppAction::SetPopup(Some(Box::new(
+                MessagePopup::new("Can't open file", err.to_string()),
+            ))))),
         }
     }
 

@@ -194,7 +194,11 @@ fn highlight_matches_by_chars(line: &mut Line, chars: &[(char, Style)], query: &
     if query_chars.len() <= lower_chars.len() {
         for start in 0..=(lower_chars.len() - query_chars.len()) {
             if lower_chars[start..start + query_chars.len()] == query_chars[..] {
-                for m in matched.iter_mut().take(start + query_chars.len()).skip(start) {
+                for m in matched
+                    .iter_mut()
+                    .take(start + query_chars.len())
+                    .skip(start)
+                {
                     *m = true;
                 }
             }

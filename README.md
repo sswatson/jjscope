@@ -66,8 +66,67 @@ You can optionally configure the following options through your jj config:
   - If `jjscope.bookmark-template` is not set but `templates.git_push_bookmark` is, the latter will be used
 - `jjscope.layout`: Changes the layout of the main and details panel. Can be `horizontal` (default) or `vertical`
 - `jjscope.layout-percent`: Changes the layout split of the main page. Should be number between 0 and 100. Defaults to `50`
+- `jjscope.description-transforms`: Define keys that rewrite a change's description. See [Description transforms](#description-transforms)
 
 Example: `jj config set --user jjscope.diff-format "color-words"` (for storing in [user config file](https://martinvonz.github.io/jj/latest/config/#user-config-file), repo config is also supported)
+
+### Description transforms
+
+A description transform rewrites the description of a change with a single
+keystroke. Each transform gets its own key in the log tab:
+
+```toml
+[[jjscope.description-transforms]]
+name = "archive"
+key = "shift+g"
+template = "archived: {{ desc }}"
+```
+
+`template` is a [Jinja](https://docs.rs/minijinja/latest/minijinja/syntax/index.html)
+template rendered with the change's current description in scope as `desc`. The
+rendered result is trimmed, so a template can be laid out over several lines
+without adding blank lines to the description.
+
+This pairs well with a revset that hides changes by description — for example,
+if `archived: ` marks a head as no longer interesting, one keypress archives it:
+
+```toml
+[revsets]
+log = "present(@) | ancestors(immutable_heads().., 2) | present(trunk()) | (visible_heads() ~ description(glob:'archived: *'))"
+```
+
+Because the template is a full Jinja template, a transform can inspect the
+description it is rewriting. Making the archive key a toggle, so that pressing
+it on an already-archived change un-archives it:
+
+```toml
+[[jjscope.description-transforms]]
+name = "archive"
+key = "shift+g"
+template = """
+{%- if desc is startingwith("archived: ") -%}
+  {{ desc | removeprefix("archived: ") }}
+{%- else -%}
+  archived: {{ desc }}
+{%- endif -%}
+"""
+```
+
+Note that Jinja is not Python: strings have no `.startswith()` method. Prefixes
+and suffixes are checked with the `startingwith` and `endingwith` *tests*
+(`desc is startingwith(...)`), and string operations are *filters*
+(`desc | upper`). Alongside MiniJinja's
+[builtin filters](https://docs.rs/minijinja/latest/minijinja/filters/index.html),
+jjscope provides `removeprefix` and `removesuffix`, which strip an affix only
+when present — unlike `| replace`, which would also strip occurrences from the
+middle of the description.
+
+Transforms apply to the marked changes, or to the selected change if none are
+marked, and take effect immediately — `u` undoes them. Nothing is written until
+every change has passed the immutability check and every template has rendered,
+so a batch either applies completely or not at all; a template error is reported
+in a popup naming the transform. Transform keys are bound after all other
+keybindings, so they override a built-in binding on the same key.
 
 ## Usage
 

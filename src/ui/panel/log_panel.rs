@@ -651,4 +651,3 @@ fn list_item_from_mouse_event(
     }
     Some(item_index)
 }
-

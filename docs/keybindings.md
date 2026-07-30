@@ -94,3 +94,20 @@ fetch-all = "shift+f"
 
 open-help = "?"
 ```
+
+### Description transforms
+
+These are not part of `[jjscope.keybinds.log-tab]`: each transform declares its
+own key alongside the rewrite it performs. `template` is a Jinja template with
+the change's current description in scope as `desc`.
+
+```toml
+[[jjscope.description-transforms]]
+name = "archive"
+key = "shift+g"
+template = "archived: {{ desc }}"
+```
+
+They are bound after every other keybinding, so a transform key overrides a
+built-in binding on the same key. See the README for the full syntax, including
+toggling an affix on and off.

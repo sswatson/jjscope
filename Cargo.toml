@@ -41,6 +41,7 @@ tracing-subscriber = "0.3.22"
 ratatui-textarea = "0.9.1"
 tui_confirm_dialog = "0.4.0"
 version-compare = "0.2.1"
+minijinja = "2.21.0"
 
 # Release build optimize size.
 # Run strip manually after build to reduce further.

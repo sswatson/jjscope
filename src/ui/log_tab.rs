@@ -211,6 +211,7 @@ impl<'a> LogTab<'a> {
         if let Some(keybinds_config) = get_env().jj_config.keybinds() {
             keybinds.extend_from_config(keybinds_config);
         }
+        keybinds.extend_from_description_transforms(get_env().jj_config.description_transforms());
 
         let config = get_env().jj_config.clone();
         let pane_divider = PaneDivider::new(config.layout_percent());
@@ -535,7 +536,10 @@ impl<'a> LogTab<'a> {
         // Like split: an empty change has no diff, so jj would open the
         // editor on nothing (or not at all) — catch it here
         if new_commander().check_revision_empty(self.head.commit_id.as_str())? {
-            return Self::message_popup("Diff edit", "The change is empty; there is no diff to edit.");
+            return Self::message_popup(
+                "Diff edit",
+                "The change is empty; there is no diff to edit.",
+            );
         }
 
         let target = self.head.commit_id.clone();
@@ -935,6 +939,91 @@ impl<'a> LogTab<'a> {
         }
     }
 
+    /// Apply a configured description transform to the marked changes, or to
+    /// the selected change if none are marked.
+    ///
+    /// This rewrites descriptions without confirmation, since it is meant to be
+    /// a single keystroke; `u` undoes it. Nothing is written until every change
+    /// has passed the immutability check and every template has rendered, so a
+    /// batch either applies completely or not at all.
+    fn handle_transform_description(&mut self, index: usize) -> Result<ComponentInputResult> {
+        let Some(transform) = get_env()
+            .jj_config
+            .description_transforms()
+            .get(index)
+            .cloned()
+        else {
+            return Ok(ComponentInputResult::NotHandled);
+        };
+
+        let commit_ids = if self.log_panel.marked_heads.is_empty() {
+            vec![self.head.commit_id.clone()]
+        } else {
+            let mut marks: Vec<CommitId> = self.log_panel.marked_heads.iter().cloned().collect();
+            marks.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+            marks
+        };
+
+        let commander = new_commander();
+        for commit_id in &commit_ids {
+            if commander.check_revision_immutable(commit_id.as_str())? {
+                return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                    Some(Box::new(MessagePopup::new(
+                        "Transform description",
+                        format!(
+                            "The description of {} cannot be changed because it is immutable.",
+                            commit_id.as_str()
+                        ),
+                    ))),
+                )));
+            }
+        }
+
+        // Render every description first: a template error partway through a
+        // batch would otherwise leave it half-rewritten.
+        let mut rewrites = Vec::with_capacity(commit_ids.len());
+        for commit_id in &commit_ids {
+            let description = commander.get_commit_description(commit_id)?;
+            match transform.apply(&description) {
+                Ok(new_description) => rewrites.push((commit_id, new_description)),
+                Err(err) => {
+                    return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                        Some(Box::new(MessagePopup::new(
+                            "Transform description",
+                            format!("{err:#}"),
+                        ))),
+                    )));
+                }
+            }
+        }
+
+        for (commit_id, new_description) in &rewrites {
+            commander.run_describe(commit_id.as_str(), new_description)?;
+        }
+
+        self.log_panel.extract_and_clear_head_marks();
+        self.set_head(new_commander().get_head_latest(&self.head)?);
+
+        let count = commit_ids.len();
+        let message = if count == 1 {
+            format!(
+                "Applied \"{}\" to the description | u: undo",
+                transform.name
+            )
+        } else {
+            format!(
+                "Applied \"{}\" to {count} descriptions | u: undo",
+                transform.name
+            )
+        };
+        Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+            vec![
+                AppAction::RefreshTab(),
+                AppAction::SetStatusMessage(message),
+            ],
+        )))
+    }
+
     fn handle_resolve(&mut self, keep_destination: bool) -> Result<ComponentInputResult> {
         if self.head.immutable {
             return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
@@ -1178,7 +1267,10 @@ impl<'a> LogTab<'a> {
                         "The conflicts cannot be resolved because the change is immutable.",
                     );
                 }
-                if new_commander().get_conflicts(&self.head.commit_id)?.is_empty() {
+                if new_commander()
+                    .get_conflicts(&self.head.commit_id)?
+                    .is_empty()
+                {
                     return Self::message_popup(
                         "Resolve",
                         "The change has no conflicts to resolve.",
@@ -1268,6 +1360,9 @@ impl<'a> LogTab<'a> {
                     return Ok(ComponentInputResult::Handled);
                 }
             }
+            LogTabEvent::TransformDescription { index } => {
+                return self.handle_transform_description(index);
+            }
             LogTabEvent::EditRevset => {
                 let mut textarea = TextArea::new(
                     self.log_panel
@@ -1305,23 +1400,21 @@ impl<'a> LogTab<'a> {
                     self.head.clone(),
                 )));
             }
-            LogTabEvent::OpenTree => {
-                match new_commander().open_revision_tree_command(&self.head) {
-                    Ok(command) => {
-                        return Ok(ComponentInputResult::HandledAction(
-                            AppAction::OpenInEditor(command),
-                        ));
-                    }
-                    Err(err) => {
-                        return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
-                            Some(Box::new(MessagePopup::new(
-                                "Browse revision",
-                                format!("{err:#}"),
-                            ))),
-                        )));
-                    }
+            LogTabEvent::OpenTree => match new_commander().open_revision_tree_command(&self.head) {
+                Ok(command) => {
+                    return Ok(ComponentInputResult::HandledAction(
+                        AppAction::OpenInEditor(command),
+                    ));
                 }
-            }
+                Err(err) => {
+                    return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                        Some(Box::new(MessagePopup::new(
+                            "Browse revision",
+                            format!("{err:#}"),
+                        ))),
+                    )));
+                }
+            },
             LogTabEvent::CopyChangeId => {
                 // Copy change ID to clipboard using crossterm
                 let change_id = self.head.change_id.as_str();
@@ -1359,9 +1452,13 @@ impl<'a> LogTab<'a> {
                 )));
             }
             LogTabEvent::OpenHelp => {
+                let mut main_panel_help = self.keybinds.make_main_panel_help();
+                main_panel_help.extend(self.keybinds.make_description_transforms_help(
+                    get_env().jj_config.description_transforms(),
+                ));
                 return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
                     Some(Box::new(HelpPopup::new(
-                        self.keybinds.make_main_panel_help(),
+                        main_panel_help,
                         vec![
                             ("Ctrl+e/Ctrl+y".to_owned(), "scroll down/up".to_owned()),
                             (
@@ -1679,9 +1776,7 @@ impl Component for LogTab<'_> {
             // instead of creating changes, and Esc clears the search. This is
             // context-sensitive: with no active search, these keys behave
             // normally.
-            if self.log_panel.has_active_search()
-                && matches!(self.pick_state, PickState::Idle)
-            {
+            if self.log_panel.has_active_search() && matches!(self.pick_state, PickState::Idle) {
                 match self.keybinds.match_event(key) {
                     LogTabEvent::CreateNew { describe: false } => {
                         self.navigate_search(true);

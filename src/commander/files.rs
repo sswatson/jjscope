@@ -775,7 +775,11 @@ mod tests {
     /// Pin `ui.editor` so [Commander::editor_argv] is deterministic in tests
     /// regardless of the developer's `$EDITOR`/`ui.editor`.
     fn with_editor(mut test_repo: TestRepo, editor: &str) -> TestRepo {
-        let mut cfg = test_repo.commander.jj_config_toml.take().unwrap_or_default();
+        let mut cfg = test_repo
+            .commander
+            .jj_config_toml
+            .take()
+            .unwrap_or_default();
         cfg.push(format!(r#"ui.editor="{editor}""#));
         test_repo.commander.jj_config_toml = Some(cfg);
         test_repo

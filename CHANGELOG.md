@@ -43,6 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Configurable description transforms: `jjscope.description-transforms` defines keys that
+  rewrite a change's description in one keystroke. Each entry declares its own `key` and a
+  Jinja `template` rendered with the current description in scope as `desc`, so a transform
+  can inspect what it is rewriting — making the archive key a toggle, for instance, by
+  stripping the prefix when it is already there. Beyond MiniJinja's builtins, `removeprefix`
+  and `removesuffix` filters strip an affix only when present. Transform keys are bound after
+  every other keybinding, so they can override a built-in one. They apply to the marked
+  changes, or the selected change if none are marked, and take effect immediately (`u` undoes
+  them); nothing is written unless every change is mutable and every template renders, so a
+  batch applies completely or not at all. Useful with a revset that hides changes by
+  description, e.g. archiving a head by prefixing `archived: `
 - Browse the whole repo as it existed at a revision with `o`, on the log, files, and bookmarks
   tabs. The revision's file tree is extracted to a temporary directory (via `git archive`
   against jj's git object store) and opened in the configured editor, with the editor's
