@@ -1,3 +1,7 @@
+// `ButtonLabel::YES`/`NO` are consts with interior mutability; cloning them is
+// how tui_confirm_dialog's API is meant to be used. Same as in log_tab.
+#![expect(clippy::borrow_interior_mutable_const)]
+
 use std::vec;
 
 use ansi_to_tui::IntoText;
@@ -8,6 +12,10 @@ use ratatui::crossterm::event::KeyEventKind;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use tracing::instrument;
+use tui_confirm_dialog::ButtonLabel;
+use tui_confirm_dialog::ConfirmDialog;
+use tui_confirm_dialog::ConfirmDialogState;
+use tui_confirm_dialog::Listener;
 
 use crate::commander::CommandError;
 use crate::commander::Commander;
@@ -29,6 +37,8 @@ use crate::ui::panel::TextContent;
 use crate::ui::utils::PaneDivider;
 use crate::ui::utils::tabs_to_spaces;
 
+const UNTRACK_POPUP_ID: u16 = 1;
+
 /// Files tab. Shows files in selected change in main panel and selected file diff in details panel
 pub struct FilesTab {
     head: Head,
@@ -43,6 +53,10 @@ pub struct FilesTab {
     diff_panel: DetailsPanel,
     diff_output: Result<Option<String>, CommandError>,
     diff_format: DiffFormat,
+
+    popup: ConfirmDialogState,
+    popup_tx: std::sync::mpsc::Sender<Listener>,
+    popup_rx: std::sync::mpsc::Receiver<Listener>,
 
     config: JjConfig,
     pane_divider: PaneDivider,
@@ -95,6 +109,8 @@ impl FilesTab {
         let config = get_env().jj_config.clone();
         let pane_divider = PaneDivider::new(config.layout_percent());
 
+        let (popup_tx, popup_rx) = std::sync::mpsc::channel();
+
         Ok(Self {
             head,
             is_current_head,
@@ -109,6 +125,10 @@ impl FilesTab {
             diff_output,
             diff_format,
             diff_panel: DetailsPanel::new(),
+
+            popup: ConfirmDialogState::default(),
+            popup_tx,
+            popup_rx,
 
             config,
             pane_divider,
@@ -158,12 +178,62 @@ impl FilesTab {
         Ok(())
     }
 
-    pub fn untrack_file(&mut self) -> Result<()> {
-        self.file
-            .as_ref()
-            .map(|current_file| new_commander().untrack_file(current_file))
-            .transpose()?;
-        Ok(())
+    /// Ask before ignoring and untracking, since the two halves are undone
+    /// differently: `jj undo` restores the tracking, but the `.gitignore` line
+    /// is a plain file edit that stays behind.
+    fn confirm_ignore_and_untrack(&mut self) -> Result<ComponentInputResult> {
+        let Some(path) = self.file.as_ref().and_then(Commander::destination_path) else {
+            return Ok(ComponentInputResult::Handled);
+        };
+        let pattern = Commander::gitignore_pattern(path);
+
+        let text = Text::from(vec![
+            Line::from("Stop tracking this file and add it to .gitignore?"),
+            Line::from(""),
+            Line::from(format!("File          : {path}")),
+            Line::from(format!(".gitignore    : {pattern}")),
+            Line::from(""),
+            Line::from("The file itself is kept on disk."),
+        ])
+        .fg(Color::default());
+
+        self.popup = ConfirmDialogState::new(
+            UNTRACK_POPUP_ID,
+            Span::styled(" Untrack ", Style::new().bold().cyan()),
+            text,
+        );
+        self.popup
+            .with_yes_button(ButtonLabel::YES.clone())
+            .with_no_button(ButtonLabel::NO.clone())
+            .with_listener(Some(self.popup_tx.clone()))
+            .open();
+        Ok(ComponentInputResult::Handled)
+    }
+
+    /// Add the selected file to `.gitignore` and untrack it, after the confirm
+    /// dialog returned yes.
+    fn execute_ignore_and_untrack(&mut self) -> Result<Option<AppAction>> {
+        let Some(current_file) = self.file.clone() else {
+            return Ok(None);
+        };
+        let path = Commander::destination_path(&current_file)
+            .unwrap_or_default()
+            .to_owned();
+
+        match new_commander().ignore_and_untrack_file(&current_file) {
+            Ok(added) => {
+                self.set_head(&new_commander().get_current_head()?)?;
+                let message = if added {
+                    format!("Untracked {path} and added it to .gitignore | u: undo the untrack")
+                } else {
+                    format!("Untracked {path} (already in .gitignore) | u: undo")
+                };
+                Ok(Some(AppAction::SetStatusMessage(message)))
+            }
+            Err(err) => Ok(Some(AppAction::SetPopup(Some(Box::new(
+                MessagePopup::new("Can't untrack file", format!("{err:#}")),
+            ))))),
+        }
     }
 
     pub fn restore_file(&mut self) -> Result<()> {
@@ -316,6 +386,17 @@ impl Component for FilesTab {
         Ok(())
     }
 
+    fn update(&mut self) -> Result<Option<AppAction>> {
+        if let Ok(res) = self.popup_rx.try_recv()
+            && res.1.unwrap_or(false)
+            && res.0 == UNTRACK_POPUP_ID
+        {
+            return self.execute_ignore_and_untrack();
+        }
+
+        Ok(None)
+    }
+
     fn draw(
         &mut self,
         f: &mut ratatui::prelude::Frame<'_>,
@@ -439,12 +520,35 @@ impl Component for FilesTab {
                 .draw(f, chunks[1]);
         }
 
+        if self.popup.is_opened() {
+            let popup = ConfirmDialog::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Green))
+                .selected_button_style(
+                    Style::default()
+                        .bg(self.config.highlight_color())
+                        .underlined(),
+                );
+            f.render_stateful_widget(popup, area, &mut self.popup);
+        }
+
         Ok(())
     }
 
     fn input(&mut self, event: Event) -> Result<ComponentInputResult> {
         if let Event::Key(key) = event {
             if key.kind != KeyEventKind::Press {
+                return Ok(ComponentInputResult::Handled);
+            }
+
+            // The confirm dialog takes precedence over the tab's own bindings
+            if self.popup.is_opened() {
+                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
+                    self.popup = ConfirmDialogState::default();
+                } else {
+                    self.popup.handle(&key);
+                }
                 return Ok(ComponentInputResult::Handled);
             }
 
@@ -466,16 +570,7 @@ impl Component for FilesTab {
                     self.refresh_diff()?;
                 }
                 KeyCode::Char('x') => {
-                    // this works even for deleted files because jj doesn't return error in that case
-                    if self.untrack_file().is_err() {
-                        return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
-                            Some(Box::new(MessagePopup::new(
-                                "Can't untrack file",
-                                "Make sure that file is ignored",
-                            ))),
-                        )));
-                    }
-                    self.set_head(&new_commander().get_current_head()?)?;
+                    return self.confirm_ignore_and_untrack();
                 }
                 KeyCode::Enter => {
                     if let Some(action) = self.open_file()? {
@@ -536,7 +631,11 @@ impl Component for FilesTab {
                                     "browse the whole repo at this revision in your editor"
                                         .to_owned(),
                                 ),
-                                ("x".to_owned(), "untrack file".to_owned()),
+                                (
+                                    "x".to_owned(),
+                                    "stop tracking the file and add it to .gitignore (keeps it on disk)"
+                                        .to_owned(),
+                                ),
                                 ("r".to_owned(), "restore file".to_owned()),
                                 (
                                     "v".to_owned(),

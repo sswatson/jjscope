@@ -258,6 +258,27 @@ impl Commander {
         Ok(Some(self.jj(["file", "untrack", &fileset]).run()?))
     }
 
+    /// Add the file to the repo-root `.gitignore` and then untrack it.
+    ///
+    /// Both steps are needed together: `jj file untrack` refuses to untrack a
+    /// file that is not ignored, since the next command would just add it back.
+    /// The file itself is left on disk — only version control forgets it.
+    ///
+    /// Returns whether a new `.gitignore` line was added; an already-ignored
+    /// file is untracked without touching `.gitignore`.
+    #[instrument(level = "trace", skip(self))]
+    pub fn ignore_and_untrack_file(&self, current_file: &File) -> Result<bool> {
+        let Some(path) = Self::destination_path(current_file) else {
+            return Ok(false);
+        };
+
+        let added = self.append_to_gitignore(&Self::gitignore_pattern(path))?;
+        // Untrack after ignoring, so jj sees the file as ignored and accepts it.
+        self.untrack_file(current_file)
+            .context("Failed untracking the file after adding it to .gitignore")?;
+        Ok(added)
+    }
+
     #[instrument(level = "trace", skip(self))]
     pub fn restore_file(&self, current_file: &File) -> Result<Option<String>, CommandError> {
         let Some(path) = current_file.path.as_ref() else {
@@ -279,6 +300,60 @@ impl Commander {
         Ok(Some(self.jj(["restore", &fileset]).run()?))
     }
 
+    /// The `.gitignore` pattern that ignores exactly `path`.
+    ///
+    /// Anchored with a leading slash so it matches that one file relative to the
+    /// repo root, rather than every similarly named file in any directory.
+    /// Separators are normalized to `/`, which is what gitignore expects even on
+    /// Windows, and the gitignore metacharacters are escaped so a path
+    /// containing them still matches literally.
+    pub fn gitignore_pattern(path: &str) -> String {
+        let escaped: String = path
+            .replace('\\', "/")
+            .chars()
+            .flat_map(|c| {
+                let escape = matches!(c, '*' | '?' | '[' | ']' | '!' | '#' | ' ' | '\\');
+                escape.then_some('\\').into_iter().chain(std::iter::once(c))
+            })
+            .collect();
+        format!("/{}", escaped.trim_start_matches('/'))
+    }
+
+    /// Append `pattern` to the repo-root `.gitignore`, and report whether it was
+    /// added. A pattern already present is left alone, so repeating the action
+    /// does not accumulate duplicate lines.
+    ///
+    /// A `.gitignore` whose last line lacks a newline gets one first, so the
+    /// appended pattern does not run onto the end of the previous entry.
+    #[instrument(level = "trace", skip(self))]
+    pub fn append_to_gitignore(&self, pattern: &str) -> Result<bool> {
+        let gitignore = Path::new(&self.env.root).join(".gitignore");
+
+        let existing = match std::fs::read_to_string(&gitignore) {
+            Ok(existing) => existing,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("Failed reading {}", gitignore.to_string_lossy()));
+            }
+        };
+
+        if existing.lines().any(|line| line.trim() == pattern) {
+            return Ok(false);
+        }
+
+        let mut contents = existing;
+        if !contents.is_empty() && !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+        contents.push_str(pattern);
+        contents.push('\n');
+
+        std::fs::write(&gitignore, contents)
+            .with_context(|| format!("Failed writing {}", gitignore.to_string_lossy()))?;
+        Ok(true)
+    }
+
     fn get_file_revset(path: &str) -> String {
         format!(
             "file:\"{}\"",
@@ -288,7 +363,7 @@ impl Commander {
 
     /// The post-change path of a file, resolving a rename to its new name.
     /// Returns `None` if there is no path (e.g. a blank line).
-    fn destination_path(current_file: &File) -> Option<&str> {
+    pub fn destination_path(current_file: &File) -> Option<&str> {
         let path = current_file.path.as_deref()?;
         if current_file.diff_type == Some(DiffType::Renamed)
             && let Some(captures) = RENAME_REGEX.captures(path)
@@ -933,6 +1008,168 @@ mod tests {
             [Conflict {
                 path: "README".to_owned()
             }]
+        );
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod gitignore_tests {
+    use std::fs;
+
+    use super::*;
+    use crate::commander::tests::TestRepo;
+
+    #[test]
+    fn gitignore_pattern_anchors_to_repo_root() {
+        // Anchored, so it matches this one file and not a like-named file
+        // elsewhere in the tree.
+        assert_eq!(Commander::gitignore_pattern("secret.env"), "/secret.env");
+        assert_eq!(
+            Commander::gitignore_pattern("sub/nested.tmp"),
+            "/sub/nested.tmp"
+        );
+        // An already-rooted path does not gain a second slash.
+        assert_eq!(Commander::gitignore_pattern("/rooted.txt"), "/rooted.txt");
+        // Windows separators normalize; gitignore always uses forward slashes.
+        assert_eq!(Commander::gitignore_pattern(r"sub\win.txt"), "/sub/win.txt");
+    }
+
+    #[test]
+    fn gitignore_pattern_escapes_metacharacters() {
+        // A literal `*` in a filename must not become a wildcard.
+        assert_eq!(Commander::gitignore_pattern("wei*rd.txt"), "/wei\\*rd.txt");
+        assert_eq!(Commander::gitignore_pattern("a?b.txt"), "/a\\?b.txt");
+        assert_eq!(Commander::gitignore_pattern("[x].txt"), "/\\[x\\].txt");
+        // A leading `!` would otherwise negate, and `#` would comment out.
+        assert_eq!(Commander::gitignore_pattern("!bang.txt"), "/\\!bang.txt");
+        assert_eq!(Commander::gitignore_pattern("#hash.txt"), "/\\#hash.txt");
+        // A space would otherwise be trimmed by git.
+        assert_eq!(Commander::gitignore_pattern("two words"), "/two\\ words");
+    }
+
+    #[test]
+    fn append_to_gitignore_creates_file() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let gitignore = test_repo.directory.path().join(".gitignore");
+
+        assert!(test_repo.commander.append_to_gitignore("/a.txt")?);
+        assert_eq!(fs::read_to_string(&gitignore)?, "/a.txt\n");
+
+        Ok(())
+    }
+
+    #[test]
+    fn append_to_gitignore_is_idempotent() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let gitignore = test_repo.directory.path().join(".gitignore");
+
+        assert!(test_repo.commander.append_to_gitignore("/a.txt")?);
+        // Repeating the action reports "not added" and does not duplicate.
+        assert!(!test_repo.commander.append_to_gitignore("/a.txt")?);
+        assert_eq!(fs::read_to_string(&gitignore)?, "/a.txt\n");
+
+        // A different pattern still appends.
+        assert!(test_repo.commander.append_to_gitignore("/b.txt")?);
+        assert_eq!(fs::read_to_string(&gitignore)?, "/a.txt\n/b.txt\n");
+
+        Ok(())
+    }
+
+    #[test]
+    fn append_to_gitignore_fixes_missing_trailing_newline() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let gitignore = test_repo.directory.path().join(".gitignore");
+
+        // A hand-edited .gitignore whose last line has no newline: appending
+        // naively would corrupt that entry.
+        fs::write(&gitignore, "/existing.txt")?;
+        assert!(test_repo.commander.append_to_gitignore("/new.txt")?);
+        assert_eq!(fs::read_to_string(&gitignore)?, "/existing.txt\n/new.txt\n");
+
+        Ok(())
+    }
+
+    #[test]
+    fn append_to_gitignore_matches_existing_entry_with_whitespace() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let gitignore = test_repo.directory.path().join(".gitignore");
+
+        // An entry with trailing whitespace still counts as present.
+        fs::write(&gitignore, "/a.txt  \n")?;
+        assert!(!test_repo.commander.append_to_gitignore("/a.txt")?);
+        assert_eq!(fs::read_to_string(&gitignore)?, "/a.txt  \n");
+
+        Ok(())
+    }
+
+    #[test]
+    fn ignore_and_untrack_file_stops_tracking_but_keeps_file() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let file_path = test_repo.directory.path().join("secret.env");
+        fs::write(&file_path, b"token")?;
+
+        // The file starts out tracked as an addition.
+        let head = test_repo.commander.get_current_head()?;
+        let files = test_repo.commander.get_files(&head)?;
+        assert!(
+            files
+                .iter()
+                .any(|f| f.path.as_deref() == Some("secret.env")),
+            "expected secret.env to be tracked, got {files:?}"
+        );
+
+        let current_file = files
+            .iter()
+            .find(|f| f.path.as_deref() == Some("secret.env"))
+            .unwrap()
+            .clone();
+        assert!(test_repo.commander.ignore_and_untrack_file(&current_file)?);
+
+        // It is ignored, no longer tracked, and still on disk.
+        let gitignore = test_repo.directory.path().join(".gitignore");
+        assert_eq!(fs::read_to_string(&gitignore)?, "/secret.env\n");
+
+        let head = test_repo.commander.get_current_head()?;
+        let files = test_repo.commander.get_files(&head)?;
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.path.as_deref() == Some("secret.env")),
+            "expected secret.env to be untracked, got {files:?}"
+        );
+        assert_eq!(fs::read_to_string(&file_path)?, "token");
+
+        Ok(())
+    }
+
+    #[test]
+    fn ignore_and_untrack_file_already_ignored() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let gitignore = test_repo.directory.path().join(".gitignore");
+        let file_path = test_repo.directory.path().join("app.log");
+
+        // Committed first, then ignored: still tracked despite the ignore rule.
+        fs::write(&file_path, b"log")?;
+        let head = test_repo.commander.get_current_head()?;
+        let files = test_repo.commander.get_files(&head)?;
+        let current_file = files
+            .iter()
+            .find(|f| f.path.as_deref() == Some("app.log"))
+            .unwrap()
+            .clone();
+        fs::write(&gitignore, "/app.log\n")?;
+
+        // Reports that no line was added, but still untracks.
+        assert!(!test_repo.commander.ignore_and_untrack_file(&current_file)?);
+        assert_eq!(fs::read_to_string(&gitignore)?, "/app.log\n");
+
+        let head = test_repo.commander.get_current_head()?;
+        let files = test_repo.commander.get_files(&head)?;
+        assert!(
+            !files.iter().any(|f| f.path.as_deref() == Some("app.log")),
+            "expected app.log to be untracked, got {files:?}"
         );
 
         Ok(())

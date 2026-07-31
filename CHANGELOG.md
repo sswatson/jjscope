@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- Files tab: `x` now adds the file to the repo-root `.gitignore` before untracking it, and
+  asks for confirmation first. Previously it ran `jj file untrack` alone, which jj rejects
+  unless the file is already ignored ("Files that are not ignored will be added back by the
+  next command") — so the common case of "I meant to ignore this" failed with a popup telling
+  you to go edit `.gitignore` by hand. The pattern is anchored to the repo root
+  (`/sub/debug.log`) so it matches that one file, gitignore metacharacters in the path are
+  escaped, and an already-present pattern is not duplicated. The file itself is kept on disk;
+  the confirmation exists because `jj undo` restores the tracking but leaves the `.gitignore`
+  line behind
 - Log tab: `r` and `Ctrl+r` are swapped — rebase is now `r` (the more common operation
   gets the easier key) and the revset editor is `Ctrl+r`. Branch rebase (`jj rebase -b`)
   is a separate gesture on `B`
