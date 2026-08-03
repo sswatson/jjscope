@@ -89,13 +89,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to pick the hunks that move; `-` splits the highlighted change in two (`jj split -r`),
   picking the first half's hunks in the diff editor. The TUI suspends while the editor
   runs and refreshes in place when it returns
-- Log tab: diff-edit a change against a chosen base with `=` (`jj diffedit`). `=` picks
-  up the change and starts a pick gesture with the cursor on its parent, so `=` then
-  `Enter` edits the change's diff against its parents as before (`jj diffedit -r`).
-  Pointing at another revision before `Enter` edits the change relative to that revision
-  instead (`jj diffedit --from <base> --to <change>`), so hunks can be dropped or restored
-  against any ancestor rather than only the parent. Deselected hunks are dropped from the
-  change and its descendants
+- Log tab: diff-edit a change against a chosen base with `=` (`jj diffedit`). `=` picks up
+  the change and starts a pick gesture with the cursor left on it, so `=` then `Enter` edits
+  the change's own diff against all its parents (`jj diffedit -r`). Marking a revision, or
+  moving the cursor off the change, edits it relative to that revision instead
+  (`jj diffedit --from <base> --to <change>`), so hunks can be dropped or restored against
+  any ancestor rather than only the parent. Deselected hunks are dropped from the change and
+  its descendants.
+  For a merge these are genuinely different operations: `-r` shows only what the merge itself
+  changed, while `--from` against a single parent also shows the other parent's changes, where
+  deselecting a hunk would revert that branch's work. Picking two or more bases is rejected,
+  since jj's `--from` resolves to exactly one revision
 - Files tab: open the selected file in your editor with `Enter` (`ui.editor`, else
   `$VISUAL`/`$EDITOR`, else `vi`). On `@` the live working-copy file is opened for
   editing; on any other revision the file's content at that revision is materialized

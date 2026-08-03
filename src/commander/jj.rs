@@ -256,14 +256,36 @@ impl Commander {
         }
     }
 
+    /// Build the invocation for editing a revision's own content in the diff
+    /// editor. Maps to `jj diffedit -r <rev>`, which shows the revision's
+    /// changes against *all* its parents.
+    ///
+    /// This is not the same as `--from <parent> --to <rev>` for a merge: with
+    /// `--from` against one parent, the other parent's changes appear in the
+    /// diff as though they belonged to this revision, so deselecting them would
+    /// revert the other branch's work rather than drop this revision's changes.
+    /// Only `-r` shows the merge's own contribution.
+    ///
+    /// Returns the command for the main loop to run with the terminal
+    /// handed over ([crate::commander::JjCommand::run_interactive]), like
+    /// [Self::squash_interactive_command].
+    pub fn diffedit_interactive_command(revision: &str) -> InteractiveCommand {
+        InteractiveCommand {
+            args: vec!["diffedit".to_owned(), "-r".to_owned(), revision.to_owned()],
+            name: "Interactive diff edit".to_owned(),
+        }
+    }
+
     /// Build the invocation for editing a revision's content in the diff
-    /// editor relative to an arbitrary base, rather than against its parent.
+    /// editor relative to an arbitrary base, rather than against its parents.
     /// Maps to `jj diffedit --from <from> --to <to>`: the diff from `from` to
     /// `to` is shown, and editing the right side updates `to` (the picked-up
     /// revision). Deselected hunks are dropped from `to` and, via the
-    /// auto-rebase, from its descendants. `--from <parent> --to <rev>` is
-    /// equivalent to `jj diffedit -r <rev>`, so this covers the plain
-    /// edit-against-parent case too.
+    /// auto-rebase, from its descendants.
+    ///
+    /// For editing a revision against its own parents, use
+    /// [Self::diffedit_interactive_command] instead — see the note there about
+    /// why `--from <parent>` is not equivalent for merges.
     ///
     /// Returns the command for the main loop to run with the terminal
     /// handed over ([crate::commander::JjCommand::run_interactive]), like
@@ -1233,5 +1255,64 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
             command.args,
             vec!["diffedit", "--from", "basecommit", "--to", "targetcommit"]
         );
+    }
+
+    #[test]
+    fn diffedit_maps_revision() {
+        // No base: `-r`, which diffs against all parents. Must not be spelled
+        // as `--from <parent> --to <rev>`, which differs for merges.
+        let command = Commander::diffedit_interactive_command("targetcommit");
+        assert_eq!(command.args, vec!["diffedit", "-r", "targetcommit"]);
+    }
+
+    /// A merge's own diff (`-r`) contains only what the merge itself changed,
+    /// while `--from <one parent>` also drags in the *other* parent's changes.
+    /// This is why an unset base maps to `-r` rather than to the first parent.
+    #[test]
+    fn diffedit_revision_differs_from_parent_base_on_merge() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        // base -> {side_a, side_b} -> merge, where the merge adds merge.txt
+        std::fs::write(test_repo.directory.path().join("base.txt"), b"base")?;
+        let base = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        std::fs::write(test_repo.directory.path().join("a.txt"), b"a")?;
+        let side_a = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        std::fs::write(test_repo.directory.path().join("b.txt"), b"b")?;
+        let side_b = test_repo.commander.get_current_head()?;
+
+        test_repo
+            .commander
+            .run_new([side_a.commit_id.as_str(), side_b.commit_id.as_str()])?;
+        std::fs::write(test_repo.directory.path().join("merge.txt"), b"m")?;
+        let merge = test_repo.commander.get_current_head()?;
+
+        // `-r`: only the merge's own contribution.
+        let own = test_repo.commander.get_files(&merge)?;
+        let own_paths: Vec<_> = own.iter().filter_map(|f| f.path.as_deref()).collect();
+        assert_eq!(own_paths, vec!["merge.txt"]);
+
+        // `--from <one parent>`: the other parent's file shows up too, which
+        // would let the diff editor revert that branch's work.
+        let against_a = test_repo
+            .commander
+            .jj([
+                "diff",
+                "--from",
+                side_a.commit_id.as_str(),
+                "--to",
+                merge.commit_id.as_str(),
+                "--summary",
+            ])
+            .run()?;
+        assert!(
+            against_a.contains("b.txt"),
+            "expected the other parent's file in a single-parent diff, got: {against_a}"
+        );
+
+        Ok(())
     }
 }

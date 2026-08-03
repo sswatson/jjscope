@@ -105,11 +105,11 @@ enum PickState {
         after: Vec<CommitId>,
     },
     /// After the diffedit key: collecting the single `--from` base to edit
-    /// `target` against. On entry the cursor is placed on `target`'s parent,
-    /// so an immediate Enter gives `jj diffedit -r target` semantics
-    /// (editing against the parent); moving the cursor elsewhere edits
-    /// `target` relative to that revision instead (`jj diffedit --from
-    /// <cursor> --to target`).
+    /// `target` against. The cursor stays on `target`, so an immediate Enter
+    /// leaves the base unset and edits the revision's own diff against all its
+    /// parents (`jj diffedit -r target`). Marking a revision, or moving the
+    /// cursor off `target`, edits relative to that revision instead
+    /// (`jj diffedit --from <base> --to target`).
     DiffEditFrom { target: CommitId },
 }
 
@@ -521,9 +521,10 @@ impl<'a> LogTab<'a> {
         }
     }
 
-    /// Pick up the change to diff-edit; the `--from` base is picked next,
-    /// with the cursor pre-placed on the change's parent so an immediate
-    /// Enter edits against the parent (`jj diffedit -r`). Diffedit operates
+    /// Pick up the change to diff-edit; the base is picked next. The cursor
+    /// stays on the change, so an immediate Enter edits that revision's own
+    /// diff against all its parents (`jj diffedit -r`). Moving the cursor, or
+    /// marking a revision, edits against that base instead. Diffedit operates
     /// on a single revision, so the picked-up target is always the change
     /// under the cursor, not a mark set.
     fn start_diffedit(&mut self) -> Result<ComponentInputResult> {
@@ -543,9 +544,6 @@ impl<'a> LogTab<'a> {
         }
 
         let target = self.head.commit_id.clone();
-        if let Ok(parent) = new_commander().get_commit_parent(&target) {
-            self.set_head(parent);
-        }
         self.pick_state = PickState::DiffEditFrom { target };
         self.update_pick_title();
         Ok(ComponentInputResult::Handled)
@@ -677,7 +675,7 @@ impl<'a> LogTab<'a> {
                     .to_owned(),
             ),
             PickState::DiffEditFrom { .. } => Some(
-                " Diff edit: pick the base to edit against (enter: parent by default, esc: cancel) "
+                " Diff edit: enter: this revision's own diff, or pick a base to edit against (esc: cancel) "
                     .to_owned(),
             ),
         };
@@ -840,6 +838,18 @@ impl<'a> LogTab<'a> {
                 }
             }
             PickState::DiffEditFrom { target } => {
+                // The base is the marked revision, or the change under the
+                // cursor if none are marked. Landing on the target itself means
+                // "just edit this revision", i.e. `-r` with no base: a revision
+                // cannot be diffed against itself, and `--from` against a single
+                // parent would misrepresent a merge.
+                let marks = self.log_panel.marked_heads.len();
+                if marks > 1 {
+                    return Self::message_popup(
+                        "Diff edit",
+                        "Diff edit needs a single base. Pick one revision to edit against.",
+                    );
+                }
                 let picked = self.take_picked_commits();
                 let [from] = picked.as_slice() else {
                     return Self::message_popup(
@@ -847,12 +857,8 @@ impl<'a> LogTab<'a> {
                         "Pick a single revision to edit against.",
                     );
                 };
-                if *from == target {
-                    return Self::message_popup(
-                        "Diff edit",
-                        "The base cannot be the change being edited.",
-                    );
-                }
+                let from = (*from != target).then(|| from.clone());
+
                 self.pick_state = PickState::Idle;
                 self.log_panel.title_override = None;
 
@@ -860,13 +866,16 @@ impl<'a> LogTab<'a> {
                 // refresh follows it through the rewrite
                 let target_head = new_commander().get_head(target.as_str())?;
                 self.set_head(target_head);
+                let command = match from {
+                    Some(from) => {
+                        Commander::diffedit_from_interactive_command(from.as_str(), target.as_str())
+                    }
+                    None => Commander::diffedit_interactive_command(target.as_str()),
+                };
                 Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
                     vec![
                         AppAction::ChangeHead(self.head.clone()),
-                        AppAction::RunInteractive(Commander::diffedit_from_interactive_command(
-                            from.as_str(),
-                            target.as_str(),
-                        )),
+                        AppAction::RunInteractive(command),
                     ],
                 )))
             }

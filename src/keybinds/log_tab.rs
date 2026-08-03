@@ -301,7 +301,7 @@ impl LogTabKeybinds {
             LogTabEvent::Squash { ignore_immutable: false } => "squash (press again for interactive)",
             LogTabEvent::Squash { ignore_immutable: true } => "squash ignoring immutability",
             LogTabEvent::Split => "split change in two, picking hunks in the diff editor",
-            LogTabEvent::DiffEdit => "edit the change's diff in the diff editor (then pick a base, or enter for its parent)",
+            LogTabEvent::DiffEdit => "edit the change's diff in the diff editor (enter for its own diff, or pick a base to edit against)",
             LogTabEvent::SetBookmark => "set bookmark",
             LogTabEvent::CopyChangeId => "yank change id to clipboard",
             LogTabEvent::CopyRev => "yank revision to clipboard",
