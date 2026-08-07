@@ -50,8 +50,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   table (`[blazingjj]` → `[jjscope]`), env vars (`BLAZINGJJ_LOG`/`BLAZINGJJ_TRACE` →
   `JJSCOPE_LOG`/`JJSCOPE_TRACE`), and log file (`blazingjj.log` → `jjscope.log`) are all renamed
 
+### Fixed
+
+- Browsing a revision with `o` no longer expands Git LFS pointers. `git archive` runs the
+  smudge filter by default, so a revision whose tree is a few dozen MB could materialize
+  many times that — in one repo a 135-byte pointer became a 1 GB file, making `o` take 3.7s
+  and write 1.5 GB instead of 0.18s and 43 MB. Objects missing from the local LFS cache were
+  fetched over the network, blocking the TUI for the length of the download. LFS files now
+  extract as their pointer text
+
 ### Added
 
+- Files tab: show working-copy files jj refused to snapshot, listed with `?` after the
+  revision's own files and counted in the panel title. These are typically files over
+  `snapshot.max-new-file-size`; jj prints a warning about them but they belong to no revision,
+  so `jj diff` never mentions them and the tab previously gave no sign they existed.
+  Selecting one shows why it was refused — its size against the configured limit — and the
+  two ways out, since there is no diff to display. Only shown for `@`, as `jj status` always
+  describes the working copy. `x` works on them too, adding the file to `.gitignore` so jj
+  stops warning
 - Configurable description transforms: `jjscope.description-transforms` defines keys that
   rewrite a change's description in one keystroke. Each entry declares its own `key` and a
   Jinja `template` rendered with the current description in scope as `desc`, so a transform

@@ -4,6 +4,7 @@
 This module has features to parse the diff output.
 It is mostly used in the [files_tab][crate::ui::files_tab] module.
 */
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -43,6 +44,16 @@ pub enum DiffType {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Conflict {
     pub path: String,
+}
+
+/// A working-copy file jj declined to snapshot, so it belongs to no revision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UntrackedFile {
+    pub path: String,
+    /// Why jj refused it, as reported by `jj status`, e.g.
+    /// `2.9MiB (3000000 bytes); the maximum size allowed is 1.0MiB (...)`.
+    /// `None` if jj listed the path without an accompanying warning.
+    pub reason: Option<String>,
 }
 
 /// Which side of a conflict [Commander::run_resolve] keeps.
@@ -117,6 +128,55 @@ impl Commander {
                 }
             })
             .collect())
+    }
+
+    /// Files present in the working copy that jj did not snapshot, with the
+    /// reason it refused each one. Maps to `jj status`.
+    ///
+    /// jj tracks everything that is not ignored, so in practice a file lands
+    /// here by exceeding `snapshot.max-new-file-size`. These files are in no
+    /// revision at all, which is why `jj diff` cannot show them and the files
+    /// tab would otherwise not mention them.
+    ///
+    /// The paths come from the `Untracked paths:` section on stdout and the
+    /// per-file reasons from the `Refused to snapshot some files:` warning on
+    /// stderr. A path with no matching warning still appears, with no reason.
+    #[instrument(level = "trace", skip(self))]
+    pub fn get_untracked_files(&self) -> Result<Vec<UntrackedFile>> {
+        let (stdout, stderr) = self
+            .jj(["status"])
+            .run_with_stderr()
+            .context("Failed getting untracked files")?;
+
+        let reasons = Self::parse_snapshot_refusals(&stderr);
+
+        Ok(stdout
+            .lines()
+            .skip_while(|line| !line.starts_with("Untracked paths:"))
+            .skip(1)
+            // The section runs until the next unindented, non-`?` line
+            .map_while(|line| line.strip_prefix("? "))
+            .map(|path| UntrackedFile {
+                path: path.to_owned(),
+                reason: reasons.get(path).cloned(),
+            })
+            .collect())
+    }
+
+    /// Pull the per-file reasons out of jj's "Refused to snapshot some files:"
+    /// warning, whose entries look like
+    /// `  big.bin: 2.9MiB (3000000 bytes); the maximum size allowed is 1.0MiB (1048576 bytes)`.
+    fn parse_snapshot_refusals(stderr: &str) -> HashMap<String, String> {
+        stderr
+            .lines()
+            .skip_while(|line| !line.contains("Refused to snapshot some files:"))
+            .skip(1)
+            .map_while(|line| line.strip_prefix("  "))
+            // Split on ": " rather than ':' so a path containing a colon is
+            // not cut in half at the wrong place.
+            .filter_map(|line| line.split_once(": "))
+            .map(|(path, reason)| (path.to_owned(), reason.to_owned()))
+            .collect()
     }
 
     /// Get list of changes files in a change. Parses the output.
@@ -1170,6 +1230,89 @@ mod gitignore_tests {
         assert!(
             !files.iter().any(|f| f.path.as_deref() == Some("app.log")),
             "expected app.log to be untracked, got {files:?}"
+        );
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod untracked_tests {
+    use std::fs;
+
+    use super::*;
+    use crate::commander::tests::TestRepo;
+
+    #[test]
+    fn parse_snapshot_refusals_extracts_reasons() {
+        let stderr = "\
+Warning: Refused to snapshot some files:
+  bigtext.log: 7.3MiB (7688890 bytes); the maximum size allowed is 64.0B (64 bytes)
+  blob.bin: 2.9MiB (3000000 bytes); the maximum size allowed is 64.0B (64 bytes)
+Hint: This is to prevent large files from being added by accident. To fix this:
+  * Add the file(s) to `.gitignore`
+";
+        let reasons = Commander::parse_snapshot_refusals(stderr);
+
+        assert_eq!(reasons.len(), 2);
+        assert_eq!(
+            reasons.get("bigtext.log").map(String::as_str),
+            Some("7.3MiB (7688890 bytes); the maximum size allowed is 64.0B (64 bytes)")
+        );
+        // The `Hint:` block ends the section, so its bullets are not entries.
+        assert!(!reasons.contains_key("* Add the file(s) to `.gitignore`"));
+    }
+
+    #[test]
+    fn parse_snapshot_refusals_handles_colon_in_path() {
+        let stderr = "\
+Warning: Refused to snapshot some files:
+  weird:name.bin: 2.0MiB (2097152 bytes); the maximum size allowed is 1.0B (1 bytes)
+";
+        let reasons = Commander::parse_snapshot_refusals(stderr);
+        assert_eq!(
+            reasons.get("weird:name.bin").map(String::as_str),
+            Some("2.0MiB (2097152 bytes); the maximum size allowed is 1.0B (1 bytes)")
+        );
+    }
+
+    #[test]
+    fn parse_snapshot_refusals_empty_when_absent() {
+        assert!(Commander::parse_snapshot_refusals("").is_empty());
+        assert!(Commander::parse_snapshot_refusals("Working copy  (@) : abc\n").is_empty());
+    }
+
+    #[test]
+    fn get_untracked_files_reports_refused_files() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        // Nothing refused yet.
+        assert_eq!(test_repo.commander.get_untracked_files()?, vec![]);
+
+        // A file over the snapshot limit is refused, so it lands in no revision.
+        let refused = test_repo.directory.path().join("big.bin");
+        fs::write(&refused, vec![b'x'; 4096])?;
+        let mut commander = test_repo.commander.clone();
+        commander
+            .jj_config_toml
+            .get_or_insert_with(Vec::new)
+            .push("snapshot.max-new-file-size=64".to_owned());
+
+        let untracked = commander.get_untracked_files()?;
+        assert_eq!(untracked.len(), 1, "got {untracked:?}");
+        assert_eq!(untracked[0].path, "big.bin");
+        let reason = untracked[0].reason.as_deref().unwrap_or_default();
+        assert!(
+            reason.contains("maximum size allowed"),
+            "expected a size reason, got {reason:?}"
+        );
+
+        // It is genuinely absent from the revision's file list.
+        let head = commander.get_current_head()?;
+        let files = commander.get_files(&head)?;
+        assert!(
+            !files.iter().any(|f| f.path.as_deref() == Some("big.bin")),
+            "refused file should not be in the diff summary, got {files:?}"
         );
 
         Ok(())

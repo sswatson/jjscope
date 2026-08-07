@@ -88,6 +88,10 @@ impl Commander {
     /// (including the executable bit) and handles binary files, so the result
     /// is a faithful copy of the revision rather than a text-only
     /// approximation.
+    ///
+    /// The one deliberate exception is Git LFS: pointer files are extracted
+    /// as-is rather than expanded into their contents, so that opening a
+    /// revision stays fast and never has to hit the network.
     #[instrument(level = "trace", skip(self))]
     pub fn extract_revision_tree(&self, head: &Head) -> Result<tempfile::TempDir> {
         let git_dir = self.resolve_git_dir()?;
@@ -97,6 +101,18 @@ impl Commander {
             .context("Creating a temporary directory for the revision tree")?;
 
         let mut archive = Command::new("git")
+            // Leave Git LFS pointers as they are. `git archive` would otherwise
+            // run the smudge filter and expand every pointer into the real
+            // file, which is drastically more work than the tree suggests: in
+            // one repo a 135-byte pointer became a 1 GB file, turning a 0.2s
+            // extraction into 3.6s and 43 MB into 1.5 GB. Worse, an object that
+            // is not in the local LFS cache is fetched over the network, which
+            // blocks the TUI for as long as the download takes. Multi-hundred-MB
+            // binaries are not what anyone opens an editor to read, and the
+            // pointer still names the object if it is really wanted.
+            .args(["-c", "filter.lfs.smudge="])
+            .args(["-c", "filter.lfs.process="])
+            .args(["-c", "filter.lfs.required=false"])
             .arg("--git-dir")
             .arg(&git_dir)
             .arg("archive")
@@ -232,6 +248,52 @@ mod tests {
         );
         // A file added after `first` must not be present.
         assert!(!tree.path().join("later.txt").exists());
+
+        Ok(())
+    }
+
+    /// Git LFS pointers must survive extraction rather than being expanded
+    /// into their contents, which would make opening a revision arbitrarily
+    /// slow and can block on the network.
+    ///
+    /// git has no generic "run no filters" switch — an in-tree `.gitattributes`
+    /// takes effect regardless of `core.attributesFile`, and filters can only be
+    /// turned off by name — so this stands in a fake `smudge` under the real
+    /// `filter.lfs.*` keys. That exercises exactly the config the fix disables,
+    /// without needing git-lfs installed.
+    #[test]
+    fn extract_revision_tree_leaves_lfs_pointers_unexpanded() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let dir = test_repo.directory.path();
+        let git_dir = test_repo.commander.resolve_git_dir()?;
+
+        // Configure a filter that would rewrite the content on checkout, the
+        // way `git lfs smudge` replaces a pointer with the real file.
+        let git_config = |args: &[&str]| -> Result<()> {
+            let status = Command::new("git")
+                .arg("--git-dir")
+                .arg(&git_dir)
+                .arg("config")
+                .args(args)
+                .status()?;
+            assert!(status.success(), "git config {args:?} failed");
+            Ok(())
+        };
+        git_config(&["filter.lfs.smudge", "sed s/POINTER/EXPANDED/"])?;
+        git_config(&["filter.lfs.clean", "cat"])?;
+
+        fs::write(dir.join(".gitattributes"), b"*.big filter=lfs -text\n")?;
+        fs::write(dir.join("data.big"), b"POINTER\n")?;
+        let head = test_repo.commander.get_current_head()?;
+
+        let tree = test_repo.commander.extract_revision_tree(&head)?;
+
+        // The stored bytes, not what the filter would have produced.
+        assert_eq!(
+            fs::read_to_string(tree.path().join("data.big"))?,
+            "POINTER\n",
+            "the lfs smudge filter ran during extraction"
+        );
 
         Ok(())
     }

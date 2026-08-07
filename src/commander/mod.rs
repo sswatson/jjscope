@@ -305,6 +305,14 @@ impl JjCommand<'_> {
         Ok(String::from_utf8(stderr)?)
     }
 
+    /// Execute the command, returning both its standard output and standard
+    /// error. For commands like `jj status`, where part of what the user needs
+    /// is printed as a warning on stderr rather than in the listing itself.
+    pub fn run_with_stderr(self) -> Result<(String, String), CommandError> {
+        let (stdout, stderr) = self.execute(Stdio::piped())?;
+        Ok((String::from_utf8(stdout)?, String::from_utf8(stderr)?))
+    }
+
     /// Configure and run the command, returning the captured standard output
     /// and standard error.
     ///

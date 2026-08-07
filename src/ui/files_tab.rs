@@ -22,6 +22,7 @@ use crate::commander::Commander;
 use crate::commander::files::Conflict;
 use crate::commander::files::ConflictSide;
 use crate::commander::files::File;
+use crate::commander::files::UntrackedFile;
 use crate::commander::log::Head;
 use crate::commander::new_commander;
 use crate::env::DiffFormat;
@@ -46,6 +47,11 @@ pub struct FilesTab {
 
     files_output: Result<Vec<File>, CommandError>,
     conflicts_output: Vec<Conflict>,
+    /// Working-copy files jj refused to snapshot. They are in no revision, so
+    /// they never appear in the diff summary; without this the tab would give
+    /// no sign they exist. Only meaningful for `@`, since `jj status` always
+    /// reports the working copy.
+    untracked_output: Vec<UntrackedFile>,
     files_list_state: ListState,
     files_height: u16,
 
@@ -60,6 +66,12 @@ pub struct FilesTab {
 
     config: JjConfig,
     pane_divider: PaneDivider,
+}
+
+/// Untracked entries are appended to the file list with a `? ` line and no
+/// diff type, since they belong to no revision.
+fn is_untracked_line(file: &File) -> bool {
+    file.diff_type.is_none() && file.line.starts_with("? ")
 }
 
 fn get_current_file_index(
@@ -121,6 +133,7 @@ impl FilesTab {
             files_height: 0,
 
             conflicts_output,
+            untracked_output: Vec::new(),
 
             diff_output,
             diff_format,
@@ -158,10 +171,61 @@ impl FilesTab {
     pub fn refresh_files(&mut self) -> Result<()> {
         self.files_output = new_commander().get_files(&self.head);
         self.conflicts_output = new_commander().get_conflicts(&self.head.commit_id)?;
+        // `jj status` always describes the working copy, so untracked paths
+        // are only meaningful while looking at `@`.
+        self.untracked_output = if self.is_current_head {
+            new_commander().get_untracked_files().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // Append the untracked paths to the file list so they can be selected
+        // and scrolled to like any other entry. They carry no `diff_type`,
+        // which is what marks them as not part of the revision.
+        if let Ok(files) = self.files_output.as_mut() {
+            for untracked in &self.untracked_output {
+                files.push(File {
+                    line: format!("? {}", untracked.path),
+                    path: Some(untracked.path.clone()),
+                    diff_type: None,
+                });
+            }
+        }
         Ok(())
     }
 
+    /// The reason jj gave for refusing `path`, if it is one of the untracked
+    /// files, formatted for the details panel.
+    fn untracked_reason(&self, path: &str) -> Option<String> {
+        let untracked = self
+            .untracked_output
+            .iter()
+            .find(|untracked| untracked.path == path)?;
+
+        let mut text = format!("{path}\n\nThis file is not tracked by jj.\n");
+        match untracked.reason.as_deref() {
+            Some(reason) => text.push_str(&format!("\njj refused to snapshot it: {reason}\n")),
+            None => text.push_str("\njj did not report a reason.\n"),
+        }
+        text.push_str(
+            "\nIt is in no revision, so it has no diff to show.\
+             \nTo include it, raise snapshot.max-new-file-size;\
+             \nto keep ignoring it, add it to .gitignore.\n",
+        );
+        Some(text)
+    }
+
     pub fn refresh_diff(&mut self) -> Result<()> {
+        // An untracked file is in no revision, so `jj diff` has nothing to show
+        // for it; explain why it is missing instead of leaving the panel blank.
+        if let Some(path) = self.file.as_ref().and_then(|file| file.path.as_deref())
+            && let Some(reason) = self.untracked_reason(path)
+        {
+            self.diff_output = Ok(Some(reason));
+            self.diff_panel.scroll_to(0);
+            return Ok(());
+        }
+
         let mut commander = new_commander();
         let inner_width = self.diff_panel.columns() as usize;
         commander.limit_width(inner_width);
@@ -430,6 +494,14 @@ impl Component for FilesTab {
                                             .iter_mut()
                                             .map(|span| span.to_owned().fg(diff_type.color()))
                                             .collect();
+                                    } else if is_untracked_line(file) {
+                                        // Not part of the revision: distinct
+                                        // from the diff types above it
+                                        line.spans = line
+                                            .spans
+                                            .iter_mut()
+                                            .map(|span| span.to_owned().fg(Color::Yellow))
+                                            .collect();
                                     }
 
                                     if current_file_index == Some(i) {
@@ -477,10 +549,15 @@ impl Component for FilesTab {
                 }
             }
 
+            let untracked_note = match self.untracked_output.len() {
+                0 => String::new(),
+                1 => " (1 untracked)".to_owned(),
+                n => format!(" ({n} untracked)"),
+            };
             let files = List::new(lines)
                 .block(
                     Block::bordered()
-                        .title(" Files for ".to_owned() + &title_change + " ")
+                        .title(" Files for ".to_owned() + &title_change + &untracked_note + " ")
                         .border_type(BorderType::Rounded),
                 )
                 .scroll_padding(3);

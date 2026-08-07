@@ -162,6 +162,8 @@ See all key mappings for the current tab with `?`.
   else `$VISUAL`/`$EDITOR`), with the editor's working directory set to that tree so file
   pickers and `:grep` stay inside the revision. Opened read-only where the editor supports
   it, since the temp tree is deleted when the editor exits
+  - Git LFS files are extracted as their pointer text rather than their contents, so opening
+    a revision stays fast and never waits on an LFS download
 - Search the visible log text with `/`, vim-style: type a query (matches highlight as you
   type), press `Enter` to jump to the first match, then `n`/`N` to step to the next/previous
   match (wrapping). `Esc` clears the search. Matching is case-insensitive and only covers
@@ -253,6 +255,12 @@ See all key mappings for the current tab with `?`.
 - Browse the whole repo at the revision being shown with `o` (same as the log tab). The files
   list only holds the files that revision *changed*, so this is how to reach everything else
   at that revision
+- Files jj refused to snapshot are listed after the revision's own files, marked `?`, with a
+  count in the panel title. In practice these are files over `snapshot.max-new-file-size`:
+  jj warns about them but they belong to no revision, so they appear in no diff. Selecting
+  one shows why it was refused and how to resolve it, since there is no diff to show. Only
+  shown for `@` — `jj status` always reports the working copy
+  - `x` works on these too, adding the file to `.gitignore` so jj stops warning about it
 - Resolve the selected file's conflict with `v`/`V` (`jj resolve --tool :theirs`/`:ours`)
   - `v` keeps the rebased/squashed revision's version; `V` keeps the rebase/squash destination's version
   - `m` resolves in the configured merge editor (`jj resolve`), file by file on the log tab
