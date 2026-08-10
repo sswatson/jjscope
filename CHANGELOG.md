@@ -61,6 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Tag support, using the first-class tag commands jj gained in 0.44. Set a tag on the
+  highlighted change from the log tab with `t` (`jj tag set`); moving an existing tag is
+  confirmed first, since jj requires `--allow-move` and a tag is usually a release marker.
+  A new Tags tab (`4`) lists tags with the revision each points at, shows remote tags with
+  `a`, deletes a local tag with `d` (the revision is kept), tracks and untracks remote tags
+  with `t`/`T` (`jj tag track`/`untrack`), and jumps to the tagged revision on the log tab
+  with `Enter`. Requires jj 0.44 or newer for the tab; the log tab's `t` needs `jj tag set`
 - Files tab: show working-copy files jj refused to snapshot, listed with `?` after the
   revision's own files and counted in the panel title. These are typically files over
   `snapshot.max-new-file-size`; jj prints a warning about them but they belong to no revision,

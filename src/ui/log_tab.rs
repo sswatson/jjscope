@@ -38,6 +38,7 @@ use crate::ui::dialog::BookmarkSetPopup;
 use crate::ui::dialog::HelpPopup;
 use crate::ui::dialog::LoaderPopup;
 use crate::ui::dialog::MessagePopup;
+use crate::ui::dialog::TagSetPopup;
 use crate::ui::panel::DetailsPanel;
 use crate::ui::panel::LargeStringContent;
 use crate::ui::panel::LogPanel;
@@ -147,6 +148,9 @@ pub struct LogTab<'a> {
     bookmark_set_popup_tx: std::sync::mpsc::Sender<bool>,
     bookmark_set_popup_rx: std::sync::mpsc::Receiver<bool>,
 
+    tag_set_popup_tx: std::sync::mpsc::Sender<bool>,
+    tag_set_popup_rx: std::sync::mpsc::Receiver<bool>,
+
     describe_textarea: Option<TextArea<'a>>,
     describe_after_new: bool,
 
@@ -206,6 +210,7 @@ impl<'a> LogTab<'a> {
 
         let (popup_tx, popup_rx) = std::sync::mpsc::channel();
         let (bookmark_set_popup_tx, bookmark_set_popup_rx) = std::sync::mpsc::channel();
+        let (tag_set_popup_tx, tag_set_popup_rx) = std::sync::mpsc::channel();
 
         let mut keybinds = LogTabKeybinds::default();
         if let Some(keybinds_config) = get_env().jj_config.keybinds() {
@@ -236,6 +241,9 @@ impl<'a> LogTab<'a> {
 
             bookmark_set_popup_tx,
             bookmark_set_popup_rx,
+
+            tag_set_popup_tx,
+            tag_set_popup_rx,
 
             describe_textarea: None,
             describe_after_new: false,
@@ -1404,6 +1412,14 @@ impl<'a> LogTab<'a> {
                     ))),
                 )));
             }
+            LogTabEvent::SetTag => {
+                return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                    Some(Box::new(TagSetPopup::new(
+                        self.head.commit_id.clone(),
+                        self.tag_set_popup_tx.clone(),
+                    ))),
+                )));
+            }
             LogTabEvent::OpenFiles => {
                 return Ok(ComponentInputResult::HandledAction(AppAction::ViewFiles(
                     self.head.clone(),
@@ -1527,6 +1543,10 @@ impl Component for LogTab<'_> {
         }
 
         if let Ok(true) = self.bookmark_set_popup_rx.try_recv() {
+            self.refresh_log_output();
+        }
+
+        if let Ok(true) = self.tag_set_popup_rx.try_recv() {
             self.refresh_log_output();
         }
 

@@ -20,6 +20,7 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - Toggle between color words and git diff with `p`
   - See different revset with `r`
   - Set a bookmark to selected change with `b`
+  - Set a tag on the selected change with `t`
   - Fetch/push with `f`/`p`
   - Squash changes with `s`/`S`: pick up, then pick the destination
   - Browse the whole repo at the selected revision in your editor with `o`
@@ -31,6 +32,10 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - Toggle between color words and git diff with `w`
   - Browse the whole repo at the shown revision in your editor with `o`
   - Untrack file with `x`
+- Tags
+  - View list of tags, including remote tags with `a`
+  - Delete with `d`, track/untrack remote tags with `t`/`T`
+  - Show the tagged revision on the log tab with `Enter`
 - Bookmarks
   - View list of bookmarks, including from all remotes with `a`
   - Create with `c`, rename with `r`, delete with `d`, forget with `f`
@@ -143,7 +148,7 @@ See all key mappings for the current tab with `?`.
 ### Basic navigation
 
 - Quit with `q`
-- Change tab with `1`/`2`/`3` or with `h`/`l`
+- Change tab with `1`/`2`/`3`/`4` or with `h`/`l`
 - Scrolling in main panel
   - Scroll down/up by one line with `j`/`k` or down/up arrow
   - Scroll down/up by half page with `J`/`K` or down/up arrow
@@ -204,6 +209,10 @@ See all key mappings for the current tab with `?`.
   - Save with `Ctrl+s`
   - Cancel with `Esc`
 - Set a bookmark to the highlighted change with `b` (`jj bookmark set`)
+- Set a tag on the highlighted change with `t` (`jj tag set`). If the name already exists,
+  jjscope confirms before moving it (`--allow-move`), since a tag is usually a release marker
+  you do not want to relocate by accident. The field is pre-filled with a tag already on that
+  revision, if any. Manage existing tags on the [Tags tab](#tags-tab)
   - Scroll in bookmark list with `j`/`k`
   - Create a new bookmark with `c`
   - Use auto-generated name with `g`
@@ -290,6 +299,21 @@ See all key mappings for the current tab with `?`.
 - Edit the highlighted bookmark's change with `e` (`jj edit`)
   - Edit the highlighted bookmark's change ignoring immutability with `E` (`jj edit --ignore-immutable`)
 - Push the highlighted bookmark with `p` (`jj git push -b <bookmark>`)
+
+### Tags tab
+
+Tags gained first-class support in jj 0.44 (set, delete, and per-remote tracking). Tags are
+*created* from the log tab with `t`, where you can see the revision being tagged; this tab is
+for browsing and managing the ones that exist.
+
+- Show the tagged revision on the log tab with `Enter`
+- Show remote tags alongside local ones with `a` (`jj tag list --all-remotes`)
+- Delete the selected local tag with `d` (`jj tag delete`), after a confirmation. The tagged
+  revision itself is kept
+- Track the selected remote tag with `t`, untrack it with `T` (`jj tag track`/`untrack`).
+  Only applies to remote tags — select one with `a` first
+- Change details panel diff format with `w`
+- Refresh with `R`
 
 ### Command log tab
 

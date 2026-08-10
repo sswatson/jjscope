@@ -6,6 +6,7 @@ pub mod log_tab;
 pub mod panel;
 pub mod search;
 pub mod styles;
+pub mod tags_tab;
 pub mod utils;
 use anyhow::Result;
 use ratatui::Frame;
