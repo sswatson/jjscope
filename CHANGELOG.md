@@ -86,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two ways out, since there is no diff to display. Only shown for `@`, as `jj status` always
   describes the working copy. `x` works on them too, adding the file to `.gitignore` so jj
   stops warning
+- Description transforms take an optional `description`, shown for the key in the help popup.
+  It falls back to `name`; the Jinja template is no longer shown there, since a multi-line
+  one filled the popup with `{%- if ... -%}` markup
 - Configurable description transforms: `jjscope.description-transforms` defines keys that
   rewrite a change's description in one keystroke. Each entry declares its own `key` and a
   Jinja `template` rendered with the current description in scope as `desc`, so a transform

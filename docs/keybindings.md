@@ -107,7 +107,10 @@ the change's current description in scope as `desc`.
 name = "archive"
 key = "shift+g"
 template = "archived: {{ desc }}"
+description = "prefix the description with archived:"
 ```
+
+`description` is the text shown for the key in the help popup; it falls back to `name`.
 
 They are bound after every other keybinding, so a transform key overrides a
 built-in binding on the same key. See the README for the full syntax, including

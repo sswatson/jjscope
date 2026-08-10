@@ -50,12 +50,30 @@ pub struct JjConfig {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct DescriptionTransform {
-    /// Shown in the help popup and in the status message after applying.
+    /// Shown in the status message after applying, and in the help popup when
+    /// no `description` is configured.
     pub name: String,
     /// The shortcut that applies this transform in the log tab.
     pub key: Shortcut,
     /// The new description, as a Jinja template over `desc`.
     pub template: String,
+    /// What the help popup says this key does. Optional, since the template is
+    /// a poor explanation of itself — a multi-line Jinja block would fill the
+    /// modal with `{%- if ... -%}` noise.
+    pub description: Option<String>,
+}
+
+impl DescriptionTransform {
+    /// The line shown for this transform in the help popup.
+    pub fn help_text(&self) -> String {
+        match self.description.as_deref() {
+            Some(description) => description.to_owned(),
+            // Fall back to the name rather than the template: a single-line
+            // template reads acceptably, but a multi-line one does not, and
+            // there is no way to tell them apart that is worth the confusion.
+            None => self.name.clone(),
+        }
+    }
 }
 
 /// The template environment, with the extra filters jjscope provides on top of
@@ -299,6 +317,7 @@ mod tests {
             name: "test".to_string(),
             key: Shortcut::from_str("shift+g").unwrap(),
             template: template.to_string(),
+            description: None,
         }
     }
 
@@ -390,6 +409,28 @@ mod tests {
     }
 
     #[test]
+    fn help_text_prefers_the_configured_description() {
+        let mut t = transform("archived: {{ desc }}");
+        // Without one, the name stands in — never the template, which for a
+        // multi-line toggle would fill the help modal with Jinja.
+        assert_eq!(t.help_text(), "test");
+
+        t.description = Some("archive or un-archive this change".to_string());
+        assert_eq!(t.help_text(), "archive or un-archive this change");
+    }
+
+    #[test]
+    fn help_text_never_leaks_the_template() {
+        let toggle = transform(TOGGLE);
+        let help = toggle.help_text();
+        assert!(!help.contains("{%"), "template leaked into help: {help:?}");
+        assert!(
+            !help.contains("desc"),
+            "template leaked into help: {help:?}"
+        );
+    }
+
+    #[test]
     fn parse_description_transforms_config() {
         let config: JjConfig = toml::from_str(
             r#"
@@ -402,6 +443,7 @@ mod tests {
             name = "wip"
             key = "ctrl+w"
             template = "wip: {{ desc }}"
+            description = "mark this change as work in progress"
             "#,
         )
         .unwrap();
@@ -415,6 +457,13 @@ mod tests {
             "archived: a change"
         );
         assert_eq!(transforms[1].key, Shortcut::from_str("ctrl+w").unwrap());
+        // `description` is optional: absent on the first, set on the second.
+        assert_eq!(transforms[0].description, None);
+        assert_eq!(transforms[0].help_text(), "archive");
+        assert_eq!(
+            transforms[1].help_text(),
+            "mark this change as work in progress"
+        );
     }
 
     #[test]

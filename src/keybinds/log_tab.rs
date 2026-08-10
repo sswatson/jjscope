@@ -256,13 +256,7 @@ impl LogTabKeybinds {
                     .map(|s| s.to_string())
                     .collect::<Vec<_>>()
                     .join("/");
-                (
-                    shortcuts,
-                    format!(
-                        "{}: set description to \"{}\"",
-                        transform.name, transform.template
-                    ),
-                )
+                (shortcuts, transform.help_text())
             })
             .collect()
     }

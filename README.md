@@ -85,7 +85,12 @@ keystroke. Each transform gets its own key in the log tab:
 name = "archive"
 key = "shift+g"
 template = "archived: {{ desc }}"
+description = "prefix the description with archived:"
 ```
+
+`description` is what the help popup (`?`) shows for the key. It is optional and falls back
+to `name` — the template is never shown, since a multi-line one would fill the popup with
+Jinja.
 
 `template` is a [Jinja](https://docs.rs/minijinja/latest/minijinja/syntax/index.html)
 template rendered with the change's current description in scope as `desc`. The
@@ -108,6 +113,7 @@ it on an already-archived change un-archives it:
 [[jjscope.description-transforms]]
 name = "archive"
 key = "shift+g"
+description = "archive or un-archive this change"
 template = """
 {%- if desc is startingwith("archived: ") -%}
   {{ desc | removeprefix("archived: ") }}
