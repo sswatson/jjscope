@@ -237,15 +237,17 @@ See all key mappings for the current tab with `?`.
     *other* parent's changes as part of the diff, so deselecting them would revert that
     branch's work rather than drop this change's. Use `Enter` with the cursor left in place
     to edit just the merge's own contribution
-- Rebase changes with `r` (`jj rebase -r`/`-s`): press `r` to pick up the marked changes
-  (or the highlighted one), then edit the parent set and press `Enter`
+- Rebase changes with `r` (`jj rebase -s`/`-r`): press `r` to pick up the marked changes
+  (or the highlighted one), then edit the parent set and press `Enter`. Descendants come
+  along by default (`jj rebase -s`)
   - The picked-up change's current parents appear marked with `✚`; `Space` toggles any
     change in or out of the parent set, so parents can be added and removed in one go
     (e.g. adding/dropping branches from a megamerge)
   - If the parent set is left untouched, `Enter` rebases onto the highlighted change
     instead — the plain "move it there" gesture
-  - Press `r` again during the gesture to toggle whether descendants come along
-    (`jj rebase -s` vs `-r`); the title shows which mode is active
+  - Press `r` again during the gesture to switch to moving just that change
+    (`jj rebase -r`), leaving its descendants behind on its old parents; press `r` again to
+    switch back. The title shows which mode is active
 - Rebase a whole branch with `B` (`jj rebase -b`): pick up a change on the branch, press
   `B`, then pick the destination(s) and press `Enter`
   - Which commits get new parents (the branch roots) depends on the destination, so

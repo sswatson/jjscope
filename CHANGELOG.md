@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- Log tab: rebase (`r`) now brings descendants along by default (`jj rebase -s`); pressing
+  `r` again during the gesture switches to moving just that change (`jj rebase -r`). The
+  two modes were previously the other way round. Moving a change usually means moving the
+  work built on top of it, and the `-r` outcome — descendants re-parented onto the moved
+  change's *old* parents — is the surprising one to get by default
 - Files tab: `x` now adds the file to the repo-root `.gitignore` before untracking it, and
   asks for confirmation first. Previously it ran `jj file untrack` alone, which jj rejects
   unless the file is already ignored ("Files that are not ignored will be added back by the

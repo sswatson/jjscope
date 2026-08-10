@@ -444,7 +444,11 @@ impl<'a> LogTab<'a> {
         self.pick_state = PickState::RebaseDestinations {
             sources,
             original_parents,
-            include_descendants: false,
+            // Descendants come along by default (`jj rebase -s`): moving a
+            // change usually means moving the work built on top of it, and
+            // leaving them behind re-parents them onto the change's old parents,
+            // which is the surprising outcome. `r` switches to this-change-only.
+            include_descendants: true,
         };
         self.update_pick_title();
         // Bake the parent glyphs into the graph
