@@ -63,7 +63,7 @@ pub struct App<'a> {
     pub log: Option<LogTab<'a>>,
     pub files: Option<FilesTab>,
     pub bookmarks: Option<BookmarksTab<'a>>,
-    pub tags: Option<TagsTab>,
+    pub tags: Option<TagsTab<'a>>,
     pub popup: Option<Box<dyn Component>>,
     pub status_message: Option<String>,
     /// An interactive jj command a component asked for. Parked here because
@@ -151,7 +151,7 @@ impl<'a> App<'a> {
             .ok_or_else(|| anyhow!("Failed to get mutable reference to BookmarksTab"))
     }
 
-    pub fn get_tags_tab(&mut self) -> Result<&mut TagsTab> {
+    pub fn get_tags_tab(&mut self) -> Result<&mut TagsTab<'a>> {
         if self.tags.is_none() {
             self.tags = Some(TagsTab::new()?);
         }

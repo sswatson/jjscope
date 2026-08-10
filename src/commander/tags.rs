@@ -323,6 +323,93 @@ mod tests {
     }
 
     #[test]
+    fn multiple_tags_on_one_revision() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let head = test_repo.commander.get_current_head()?;
+        let rev = head.commit_id.as_str();
+
+        // A revision can carry any number of tags, which is what the log tab's
+        // set-tag dialog has to account for.
+        for name in ["v1.0", "v1.0-rc1", "stable"] {
+            test_repo.commander.set_tag(name, rev, false)?;
+        }
+
+        let mut at: Vec<String> = test_repo
+            .commander
+            .get_tags_at(rev)?
+            .into_iter()
+            .map(|tag| tag.name)
+            .collect();
+        at.sort();
+        assert_eq!(at, vec!["stable", "v1.0", "v1.0-rc1"]);
+
+        // Deleting one leaves the others alone.
+        test_repo.commander.delete_tag("v1.0-rc1")?;
+        let mut at: Vec<String> = test_repo
+            .commander
+            .get_tags_at(rev)?
+            .into_iter()
+            .map(|tag| tag.name)
+            .collect();
+        at.sort();
+        assert_eq!(at, vec!["stable", "v1.0"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn rename_is_set_then_delete() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let head = test_repo.commander.get_current_head()?;
+        let rev = head.commit_id.as_str();
+        test_repo.commander.set_tag("v1.0", rev, false)?;
+
+        // jj has no `tag rename`; the tab points the new name at the old tag's
+        // revision, then removes the old name. `-r <tag>` resolves to where
+        // that tag currently points.
+        test_repo.commander.set_tag("v2.0", "v1.0", false)?;
+        test_repo.commander.delete_tag("v1.0")?;
+
+        let at: Vec<String> = test_repo
+            .commander
+            .get_tags_at(rev)?
+            .into_iter()
+            .map(|tag| tag.name)
+            .collect();
+        assert_eq!(at, vec!["v2.0"], "rename should leave exactly the new name");
+
+        Ok(())
+    }
+
+    #[test]
+    fn set_tag_can_target_another_tag() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let first = test_repo.commander.get_current_head()?;
+        test_repo
+            .commander
+            .set_tag("anchor", first.commit_id.as_str(), false)?;
+
+        test_repo.commander.jj(["new"]).run_void()?;
+        let second = test_repo.commander.get_current_head()?;
+        test_repo
+            .commander
+            .set_tag("mover", second.commit_id.as_str(), false)?;
+
+        // Moving by revset: `-r anchor` resolves to the anchor tag's revision.
+        test_repo.commander.set_tag("mover", "anchor", true)?;
+
+        let at: Vec<String> = test_repo
+            .commander
+            .get_tags_at(first.commit_id.as_str())?
+            .into_iter()
+            .map(|tag| tag.name)
+            .collect();
+        assert!(at.contains(&"mover".to_owned()), "got {at:?}");
+
+        Ok(())
+    }
+
+    #[test]
     fn get_tags_pairs_display_lines_with_data() -> Result<()> {
         let test_repo = TestRepo::new()?;
         let head = test_repo.commander.get_current_head()?;

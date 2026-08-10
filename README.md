@@ -209,10 +209,12 @@ See all key mappings for the current tab with `?`.
   - Save with `Ctrl+s`
   - Cancel with `Esc`
 - Set a bookmark to the highlighted change with `b` (`jj bookmark set`)
-- Set a tag on the highlighted change with `t` (`jj tag set`). If the name already exists,
-  jjscope confirms before moving it (`--allow-move`), since a tag is usually a release marker
-  you do not want to relocate by accident. The field is pre-filled with a tag already on that
-  revision, if any. Manage existing tags on the [Tags tab](#tags-tab)
+- Set a tag on the highlighted change with `t` (`jj tag set`). The field starts empty, so
+  typing a name always *creates* a tag — a revision can carry any number of them, and the
+  ones already there are listed below the field for reference. Naming one that already exists
+  is a move, which jjscope confirms first (`--allow-move`), since a tag is usually a release
+  marker you do not want to relocate by accident. Move, rename, and delete existing tags on
+  the [Tags tab](#tags-tab)
   - Scroll in bookmark list with `j`/`k`
   - Create a new bookmark with `c`
   - Use auto-generated name with `g`
@@ -312,6 +314,11 @@ for browsing and managing the ones that exist.
 - Show remote tags alongside local ones with `a` (`jj tag list --all-remotes`)
 - Delete the selected local tag with `d` (`jj tag delete`), after a confirmation. The tagged
   revision itself is kept
+- Move the selected tag to another revision with `m`: type any revset (`@`, a change id, a
+  bookmark or tag name) and press `Enter` (`jj tag set --allow-move`)
+- Rename the selected tag with `r`. jj has no rename, so this sets the new name at the same
+  revision and deletes the old one; the new name is created first, so a failure leaves the
+  original tag intact
 - Track the selected remote tag with `t`, untrack it with `T` (`jj tag track`/`untrack`).
   Only applies to remote tags — select one with `a` first
 - Change details panel diff format with `w`

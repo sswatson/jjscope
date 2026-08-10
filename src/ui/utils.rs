@@ -1,4 +1,5 @@
 mod large_string;
+use ansi_to_tui::IntoText;
 pub use large_string::LargeString;
 use ratatui::crossterm::event::MouseButton;
 use ratatui::crossterm::event::MouseEvent;
@@ -7,6 +8,9 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
+use ratatui::style::Stylize;
+use ratatui::text::Text;
 
 use crate::env::JJLayout;
 
@@ -233,4 +237,66 @@ pub fn tabs_to_spaces(line: &str) -> String {
         }
     }
     out
+}
+
+/// Render a jj error message as styled text.
+///
+/// jj is run with `--color always`, so its errors arrive carrying ANSI escapes.
+/// Putting that string straight into a widget prints the escapes literally
+/// (`[1m[38;5;1mError: ...`), so they are parsed into styles here. A message
+/// that fails to parse is shown as-is in red rather than dropped.
+pub fn error_text(message: &str) -> Text<'static> {
+    match message.into_text() {
+        Ok(text) => Text::from(
+            text.lines
+                .into_iter()
+                .map(|line| line.to_owned())
+                .collect::<Vec<_>>(),
+        ),
+        Err(_) => Text::from(message.to_owned()).fg(Color::Red),
+    }
+}
+
+#[cfg(test)]
+mod error_text_tests {
+    use super::*;
+
+    #[test]
+    fn error_text_parses_ansi_into_styles() {
+        // jj runs with `--color always`, so its errors carry escapes. They must
+        // become styling, not literal `[1m[38;5;1m` text in the popup.
+        let colored = "\x1b[1m\x1b[38;5;1mError: \x1b[39mRefusing to move tag: tags\x1b[0m";
+        let text = error_text(colored);
+
+        let rendered: String = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(rendered, "Error: Refusing to move tag: tags");
+        assert!(!rendered.contains('\x1b'), "escape survived: {rendered:?}");
+        assert!(!rendered.contains("[1m"), "escape survived: {rendered:?}");
+    }
+
+    #[test]
+    fn error_text_keeps_every_line() {
+        // The "Hint:" line carries the actionable advice, so it must survive.
+        let message =
+            "Error: Refusing to move tag: tags\nHint: Use --allow-move to update existing tags.";
+        let text = error_text(message);
+        assert_eq!(text.lines.len(), 2, "got {:?}", text.lines);
+    }
+
+    #[test]
+    fn error_text_passes_plain_messages_through() {
+        let text = error_text("something went wrong");
+        let rendered: String = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(rendered, "something went wrong");
+    }
 }

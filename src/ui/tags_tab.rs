@@ -12,8 +12,11 @@ use anyhow::Result;
 use ratatui::crossterm::event::Event;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::crossterm::event::KeyEventKind;
+use ratatui::crossterm::event::KeyModifiers;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use ratatui_textarea::CursorMove;
+use ratatui_textarea::TextArea;
 use tracing::instrument;
 use tui_confirm_dialog::ButtonLabel;
 use tui_confirm_dialog::ConfirmDialog;
@@ -34,11 +37,48 @@ use crate::ui::dialog::MessagePopup;
 use crate::ui::panel::DetailsPanel;
 use crate::ui::panel::TextContent;
 use crate::ui::utils::PaneDivider;
+use crate::ui::utils::error_text;
 use crate::ui::utils::tabs_to_spaces;
 
 const DELETE_POPUP_ID: u16 = 1;
 
-pub struct TagsTab {
+/// A text prompt shown over the tag list, for the operations that need a
+/// name or a revision typed in.
+struct Prompt<'a> {
+    kind: PromptKind,
+    /// The tag the prompt acts on, captured when it opened so that a refresh
+    /// cannot change what is being edited mid-prompt.
+    tag_name: String,
+    textarea: TextArea<'a>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PromptKind {
+    /// Repoint the tag at a revision (`jj tag set --allow-move`).
+    Move,
+    /// jj has no `tag rename`, so this deletes the old name and sets the new
+    /// one at the same revision.
+    Rename,
+}
+
+impl PromptKind {
+    fn title(self) -> &'static str {
+        match self {
+            PromptKind::Move => "Move tag",
+            PromptKind::Rename => "Rename tag",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            PromptKind::Move => "Revision to move it to:",
+            PromptKind::Rename => "New name:",
+        }
+    }
+}
+
+pub struct TagsTab<'a> {
     tags_output: Result<Vec<TagLine>, CommandError>,
     tags_list_state: ListState,
     tags_height: u16,
@@ -49,6 +89,8 @@ pub struct TagsTab {
     tag: Option<TagLine>,
     tag_panel: DetailsPanel,
     tag_output: Option<Result<String, CommandError>>,
+
+    prompt: Option<Prompt<'a>>,
 
     popup: ConfirmDialogState,
     popup_tx: std::sync::mpsc::Sender<Listener>,
@@ -78,7 +120,7 @@ fn current_tag_index(
     tags.iter().position(|tag| tag_lines_match(current, tag))
 }
 
-impl TagsTab {
+impl TagsTab<'_> {
     #[instrument(level = "info", name = "Initializing tags tab", parent = None, skip())]
     pub fn new() -> Result<Self> {
         let diff_format = get_env().jj_config.diff_format();
@@ -106,6 +148,7 @@ impl TagsTab {
             tag,
             tag_panel: DetailsPanel::new(),
             tag_output: None,
+            prompt: None,
             popup: ConfirmDialogState::default(),
             popup_tx,
             popup_rx,
@@ -170,6 +213,85 @@ impl TagsTab {
         match self.tag.as_ref()? {
             TagLine::Parsed { tag, .. } => Some(tag),
             TagLine::Unparsable(_) => None,
+        }
+    }
+
+    /// Open the move/rename prompt for the selected local tag.
+    fn start_prompt(&mut self, kind: PromptKind) -> ComponentInputResult {
+        let Some(tag) = self.selected_tag() else {
+            return ComponentInputResult::Handled;
+        };
+        if tag.remote.is_some() {
+            return ComponentInputResult::HandledAction(AppAction::SetPopup(Some(Box::new(
+                MessagePopup::new(
+                    kind.title(),
+                    "Only local tags can be changed. Remote tags follow their remote.",
+                ),
+            ))));
+        }
+
+        let tag_name = tag.name.clone();
+        let mut textarea = TextArea::default();
+        // Seed with something sensible to edit: the current name for a rename,
+        // and the tag itself for a move, since `jj tag set -r <tag>` resolves
+        // to where it points now.
+        let seed = match kind {
+            PromptKind::Rename => tag_name.clone(),
+            PromptKind::Move => "@".to_owned(),
+        };
+        textarea.insert_str(&seed);
+        textarea.move_cursor(CursorMove::End);
+
+        self.prompt = Some(Prompt {
+            kind,
+            tag_name,
+            textarea,
+            error: None,
+        });
+        ComponentInputResult::Handled
+    }
+
+    /// Apply the open prompt. Returns the status message on success.
+    fn submit_prompt(&mut self) -> Option<String> {
+        let prompt = self.prompt.as_mut()?;
+        let input = prompt.textarea.lines().join("\n");
+        let input = input.trim().to_owned();
+        if input.is_empty() {
+            return None;
+        }
+
+        let commander = new_commander();
+        let tag_name = prompt.tag_name.clone();
+        let kind = prompt.kind;
+
+        let result = match kind {
+            PromptKind::Move => commander
+                .set_tag(&tag_name, &input, true)
+                .map(|()| format!("Moved tag {tag_name} to {input} | u: undo")),
+            PromptKind::Rename => {
+                // jj has no rename: point the new name at wherever the old one
+                // is, then drop the old one. Setting first means a failure
+                // partway leaves the original tag intact.
+                commander
+                    .set_tag(&input, &tag_name, false)
+                    .and_then(|()| commander.delete_tag(&tag_name))
+                    .map(|()| format!("Renamed tag {tag_name} to {input} | u: undo"))
+            }
+        };
+
+        match result {
+            Ok(message) => {
+                self.prompt = None;
+                self.refresh_tags();
+                self.refresh_tag();
+                Some(message)
+            }
+            Err(err) => {
+                if let Some(prompt) = self.prompt.as_mut() {
+                    prompt.error = Some(format!("{err}"));
+                }
+                None
+            }
         }
     }
 
@@ -268,7 +390,7 @@ impl TagsTab {
     }
 }
 
-impl Component for TagsTab {
+impl Component for TagsTab<'_> {
     fn focus(&mut self) -> Result<()> {
         self.refresh_tags();
         self.refresh_tag();
@@ -352,6 +474,61 @@ impl Component for TagsTab {
                 .draw(f, chunks[1]);
         }
 
+        if let Some(prompt) = self.prompt.as_ref() {
+            let block = crate::ui::styles::create_popup_block(prompt.kind.title());
+            // jj errors often carry a "Hint:" line after the "Error:" one, and
+            // the hint is usually the actionable half (e.g. "Use --allow-move").
+            // Size to the message plus its top border rather than assuming one
+            // line, so the hint is not clipped away.
+            let error_lines = prompt
+                .error
+                .as_deref()
+                .map(|error| error.lines().count().clamp(1, 4) as u16 + 1)
+                .unwrap_or(0);
+            let prompt_area =
+                crate::ui::utils::centered_rect_line_height(area, 50, 6 + error_lines);
+            f.render_widget(Clear, prompt_area);
+            f.render_widget(&block, prompt_area);
+
+            let mut constraints = vec![Constraint::Length(1), Constraint::Fill(1)];
+            if error_lines > 0 {
+                constraints.push(Constraint::Length(error_lines));
+            }
+            constraints.push(Constraint::Length(2));
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(constraints)
+                .split(block.inner(prompt_area));
+
+            f.render_widget(
+                Paragraph::new(format!("{} {}", prompt.kind.label(), prompt.tag_name))
+                    .fg(Color::DarkGray),
+                chunks[0],
+            );
+            f.render_widget(&prompt.textarea, chunks[1]);
+            if let Some(error) = prompt.error.as_ref() {
+                f.render_widget(
+                    Paragraph::new(error_text(error)).block(
+                        Block::default()
+                            .borders(Borders::TOP)
+                            .border_style(Style::default().fg(Color::DarkGray)),
+                    ),
+                    chunks[2],
+                );
+            }
+            f.render_widget(
+                Paragraph::new("Ctrl+s/Enter: apply | Escape: cancel")
+                    .fg(Color::DarkGray)
+                    .alignment(Alignment::Center)
+                    .block(
+                        Block::default()
+                            .borders(Borders::TOP)
+                            .border_style(Style::default().fg(Color::DarkGray)),
+                    ),
+                chunks[chunks.len() - 1],
+            );
+        }
+
         if self.popup.is_opened() {
             let popup = ConfirmDialog::default()
                 .borders(Borders::ALL)
@@ -373,6 +550,36 @@ impl Component for TagsTab {
             return Ok(ComponentInputResult::NotHandled);
         };
         if key.kind != KeyEventKind::Press {
+            return Ok(ComponentInputResult::Handled);
+        }
+
+        if self.prompt.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.prompt = None;
+                }
+                KeyCode::Enter => {
+                    if let Some(message) = self.submit_prompt() {
+                        return Ok(ComponentInputResult::HandledAction(
+                            AppAction::SetStatusMessage(message),
+                        ));
+                    }
+                }
+                _ if key.code == KeyCode::Char('s')
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if let Some(message) = self.submit_prompt() {
+                        return Ok(ComponentInputResult::HandledAction(
+                            AppAction::SetStatusMessage(message),
+                        ));
+                    }
+                }
+                _ => {
+                    if let Some(prompt) = self.prompt.as_mut() {
+                        prompt.textarea.input(key);
+                    }
+                }
+            }
             return Ok(ComponentInputResult::Handled);
         }
 
@@ -410,6 +617,8 @@ impl Component for TagsTab {
                 self.refresh_tag();
             }
             KeyCode::Char('d') => return Ok(self.confirm_delete()),
+            KeyCode::Char('m') => return Ok(self.start_prompt(PromptKind::Move)),
+            KeyCode::Char('r') => return Ok(self.start_prompt(PromptKind::Rename)),
             KeyCode::Char('t') => return Ok(self.set_tracking(true)),
             KeyCode::Char('T') => return Ok(self.set_tracking(false)),
             KeyCode::Enter => {
@@ -447,6 +656,16 @@ impl Component for TagsTab {
                             (
                                 "d".to_owned(),
                                 "delete the selected local tag (the revision is kept)".to_owned(),
+                            ),
+                            (
+                                "m".to_owned(),
+                                "move the selected tag to another revision (jj tag set --allow-move)"
+                                    .to_owned(),
+                            ),
+                            (
+                                "r".to_owned(),
+                                "rename the selected tag (jj has no rename: set + delete)"
+                                    .to_owned(),
                             ),
                             (
                                 "t".to_owned(),

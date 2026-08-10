@@ -25,6 +25,7 @@ use crate::ui::Component;
 use crate::ui::ComponentInputResult;
 use crate::ui::styles::create_popup_block;
 use crate::ui::utils::centered_rect_line_height;
+use crate::ui::utils::error_text;
 
 /// Prompt for a tag name and set it on a revision.
 ///
@@ -35,6 +36,11 @@ use crate::ui::utils::centered_rect_line_height;
 pub struct TagSetPopup<'a> {
     commit_id: CommitId,
     name: TextArea<'a>,
+    /// Local tags already on this revision, listed as context. A revision can
+    /// carry any number of tags, so these are shown rather than pre-filled:
+    /// pre-filling one would make Enter silently *move* it, and would hide the
+    /// others entirely.
+    existing: Vec<String>,
     /// Set once the typed name is found to exist; holds that name while the
     /// user confirms moving it.
     confirming_move: Option<String>,
@@ -44,20 +50,20 @@ pub struct TagSetPopup<'a> {
 
 impl TagSetPopup<'_> {
     pub fn new(commit_id: CommitId, tx: std::sync::mpsc::Sender<bool>) -> Self {
-        // Pre-fill with a tag already on this revision, if any: re-tagging is
-        // usually correcting or bumping the existing one, and it saves retyping
-        // a version string. The text is selected-as-typed, so typing replaces
-        // nothing unexpectedly — the user can edit or clear it.
-        let mut name = TextArea::default();
-        if let Ok(tags) = new_commander().get_tags_at(commit_id.as_str())
-            && let Some(existing) = tags.iter().find(|tag| tag.remote.is_none())
-        {
-            name.insert_str(&existing.name);
-        }
+        let existing = new_commander()
+            .get_tags_at(commit_id.as_str())
+            .map(|tags| {
+                tags.into_iter()
+                    .filter(|tag| tag.remote.is_none())
+                    .map(|tag| tag.name)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         Self {
             commit_id,
-            name,
+            name: TextArea::default(),
+            existing,
             confirming_move: None,
             error: None,
             tx,
@@ -129,34 +135,65 @@ impl Component for TagSetPopup<'_> {
         }
 
         let block = create_popup_block("Set tag");
-        let area = centered_rect_line_height(area, 40, if self.error.is_some() { 7 } else { 5 });
+        // Grow for whichever optional sections are present.
+        let existing_lines = if self.existing.is_empty() { 0 } else { 3 };
+        // Size to the message plus its top border. jj errors are often several
+        // lines — an "Error:" line, a "Hint:" with the actionable advice, and
+        // sometimes a parse trace — and the hint is the half worth reading.
+        // Capped so a long trace cannot push the popup past the screen.
+        let error_lines = self
+            .error
+            .as_deref()
+            .map(|error| error.lines().count().clamp(1, 6) as u16 + 1)
+            .unwrap_or(0);
+        let area = centered_rect_line_height(area, 60, 5 + existing_lines + error_lines);
         f.render_widget(Clear, area);
         f.render_widget(&block, area);
 
-        let constraints = if self.error.is_some() {
-            vec![
-                Constraint::Fill(1),
-                Constraint::Length(2),
-                Constraint::Length(2),
-            ]
-        } else {
-            vec![Constraint::Fill(1), Constraint::Length(2)]
-        };
+        let mut constraints = vec![Constraint::Fill(1)];
+        if existing_lines > 0 {
+            constraints.push(Constraint::Length(existing_lines));
+        }
+        if error_lines > 0 {
+            constraints.push(Constraint::Length(error_lines));
+        }
+        constraints.push(Constraint::Length(2));
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(block.inner(area));
 
         f.render_widget(&self.name, chunks[0]);
+        let mut next = 1;
 
-        if let Some(error) = self.error.as_ref() {
+        if existing_lines > 0 {
+            // Naming one of these moves it here rather than creating a tag,
+            // which the confirmation step spells out.
+            let listed = self.existing.join("  ");
             f.render_widget(
-                Paragraph::new(error.as_str()).fg(Color::Red).block(
+                Paragraph::new(vec![
+                    Line::from("Already on this revision:").fg(Color::DarkGray),
+                    Line::from(listed).fg(Color::Magenta),
+                ])
+                .block(
                     Block::default()
                         .borders(Borders::TOP)
                         .border_style(Style::default().fg(Color::DarkGray)),
                 ),
-                chunks[1],
+                chunks[next],
+            );
+            next += 1;
+        }
+
+        if let Some(error) = self.error.as_ref() {
+            f.render_widget(
+                Paragraph::new(error_text(error)).block(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(Color::DarkGray)),
+                ),
+                chunks[next],
             );
         }
 
