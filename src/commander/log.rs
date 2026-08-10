@@ -5,6 +5,7 @@ This module has features to parse the log output to extract change id and commit
 It is mostly used in the [log_tab][crate::ui::log_tab] module.
 */
 
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::sync::LazyLock;
 
@@ -229,6 +230,37 @@ impl Commander {
             graph_heads,
             heads,
         })
+    }
+
+    /// The change IDs of every revision selected by `revset`.
+    /// Maps to `jj log -r <revset> -T change_id`
+    ///
+    /// Used to populate the log's highlight set, so it is deliberately **not**
+    /// intersected with the log's own revset. The result marks revisions in the
+    /// log rather than filtering it, and the caller also wants the repo-wide
+    /// total: the log's revset is typically a handful of recent commits, so a
+    /// highlight expression can easily select many revisions with none of them in
+    /// view. Reporting "42 revisions, none in view" tells the user to widen the
+    /// log's revset, where an intersected count of 0 would read as "nothing
+    /// matches".
+    ///
+    /// Keyed by change ID, not commit ID: every operation that rewrites a
+    /// revision (squash, rebase, absorb, describe) gives it a new commit ID while
+    /// preserving its change ID, so a commit-ID-keyed set would go stale on the
+    /// next keypress -- and since rebase rewrites descendants too, one keystroke
+    /// could drop the mark from many revisions at once.
+    ///
+    /// An empty result is not an error: a revset that selects nothing yields `Ok`
+    /// with an empty set, while a malformed one yields `Err`. Callers report the
+    /// two differently.
+    #[instrument(level = "trace", skip(self))]
+    pub fn get_changes_in(&self, revset: &str) -> Result<HashSet<ChangeId>, CommandError> {
+        Ok(self
+            .execute_jj_log(revset, r#"change_id ++ "\n""#)?
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| ChangeId(line.to_owned()))
+            .collect())
     }
 
     /// Get commit details.

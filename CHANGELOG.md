@@ -66,6 +66,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Log tab: mark the revisions matching a revset with a gutter bar (`▌`), leaving the log
+  otherwise untouched — same revset, same graph, same node glyphs — so the marks read against
+  the surrounding history instead of replacing it. `Ctrl+r` now edits two fields, `Show:` (the
+  log's revset) and `Mark:` (the revset to mark within it), with `Tab` to switch between them;
+  both start empty. Any revset works, so `conflicts()`, `description(glob:'*wip*')`, and
+  `files('src/ui')` all mark in place rather than filtering the view. The `Mark:` revset is
+  evaluated repo-wide rather than intersected with `Show:`, which lets jjscope tell "3
+  revisions match, none in this revset" apart from "nothing matches"; in that case the panel
+  title reads `marking: justfile (0 of 3 in view — ctrl+w to show)` and keeps saying so while it
+  holds, with `Ctrl+w` widening `Show:` to the marking expression. Marks are keyed by change id,
+  so they follow revisions through squash, rebase, and describe, and are recomputed on each
+  refresh so moving hunks moves the marks
+- Log tab: mark the revisions touching a path with `T`, a shortcut for writing `files(...)` in
+  the `Mark:` field. A bare path uses jj's default `prefix-glob:` matching, so a directory marks
+  everything beneath it; `glob:`, `file:`, and `root:` prefixes are passed through to jj
+- Files tab: mark the revisions touching the selected file with `T` — the same key as on the log
+  tab — switching to the log tab with that file marked, so neither entry point needs the path
+  typed or pasted. Matched exactly, since the path came from jj rather than from the user
 - Tags tab: move a tag to another revision with `m` and rename one with `r` (jj has no
   `tag rename`, so this sets the new name and deletes the old). Both prompt for input and
   report jj's own error in place if the revset or name is rejected

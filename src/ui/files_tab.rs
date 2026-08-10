@@ -657,6 +657,18 @@ impl Component for FilesTab {
                 KeyCode::Char('o') => {
                     return Ok(ComponentInputResult::HandledAction(self.open_tree()));
                 }
+                KeyCode::Char('T') => {
+                    // `destination_path` resolves a rename to its new name; a file
+                    // with no parsed path (a blank line, or an appended conflict
+                    // row) has nothing to filter on.
+                    let Some(path) = self.file.as_ref().and_then(Commander::destination_path)
+                    else {
+                        return Ok(ComponentInputResult::Handled);
+                    };
+                    return Ok(ComponentInputResult::HandledAction(
+                        AppAction::FilterLogByPath(path.to_owned()),
+                    ));
+                }
                 KeyCode::Char('r') => {
                     if let Err(err) = self.restore_file() {
                         return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
@@ -706,6 +718,11 @@ impl Component for FilesTab {
                                 (
                                     "o".to_owned(),
                                     "browse the whole repo at this revision in your editor"
+                                        .to_owned(),
+                                ),
+                                (
+                                    "T".to_owned(),
+                                    "mark the revisions touching this file on the log tab"
                                         .to_owned(),
                                 ),
                                 (

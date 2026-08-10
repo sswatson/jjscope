@@ -7,6 +7,7 @@ use ratatui::crossterm::clipboard::CopyToClipboard;
 use ratatui::crossterm::event::Event;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::crossterm::event::KeyEventKind;
+use ratatui::crossterm::event::KeyModifiers;
 use ratatui::crossterm::execute;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -39,6 +40,8 @@ use crate::ui::dialog::HelpPopup;
 use crate::ui::dialog::LoaderPopup;
 use crate::ui::dialog::MessagePopup;
 use crate::ui::dialog::TagSetPopup;
+use crate::ui::highlight::HighlightOutcome;
+use crate::ui::highlight::WIDEN_KEY_LABEL;
 use crate::ui::panel::DetailsPanel;
 use crate::ui::panel::LargeStringContent;
 use crate::ui::panel::LogPanel;
@@ -114,14 +117,174 @@ enum PickState {
     DiffEditFrom { target: CommitId },
 }
 
+/// Draw a one-line prompt bar over the bottom border row of `panel_area`, with
+/// `prompt` in `prompt_color` followed by `textarea`.
+///
+/// Shared by the `/` search bar and the file-filter bar, which differ only in
+/// their prompt: both sit on the panel's bottom border so they cost no log rows.
+fn draw_prompt_bar(
+    f: &mut Frame<'_>,
+    panel_area: Rect,
+    prompt: &str,
+    prompt_color: Color,
+    textarea: &TextArea<'_>,
+) {
+    // Sit on the bottom border row of the panel, inset past the rounded corners.
+    let bar = Rect {
+        x: panel_area.x + 1,
+        y: panel_area.y + panel_area.height.saturating_sub(1),
+        width: panel_area.width.saturating_sub(2),
+        height: 1,
+    };
+    f.render_widget(Clear, bar);
+
+    let prompt_width = prompt.chars().count() as u16;
+    let prompt_rect = Rect {
+        width: prompt_width.min(bar.width),
+        ..bar
+    };
+    f.render_widget(
+        Span::styled(prompt.to_owned(), Style::new().fg(prompt_color).bold()),
+        prompt_rect,
+    );
+
+    let input = Rect {
+        x: bar.x + prompt_width,
+        width: bar.width.saturating_sub(prompt_width),
+        ..bar
+    };
+    f.render_widget(textarea, input);
+}
+
+/// Width of a revset field's label column, e.g. `" Show:"` plus its trailing space.
+const REVSET_FIELD_LABEL_WIDTH: u16 = 7;
+
+/// Draw one row of the revset editor: a label, then the field's input beside it.
+///
+/// The focused field's label is brightened, since a [TextArea] gives no cursor of
+/// its own while it is not the one taking input.
+fn draw_revset_field(
+    f: &mut Frame<'_>,
+    row: Rect,
+    label: &str,
+    focused: bool,
+    textarea: &TextArea<'_>,
+) {
+    let style = if focused {
+        Style::new().bold().cyan()
+    } else {
+        Style::new().fg(Color::DarkGray)
+    };
+
+    let label_rect = Rect {
+        width: REVSET_FIELD_LABEL_WIDTH.min(row.width),
+        ..row
+    };
+    f.render_widget(
+        Paragraph::new(Span::styled(label.to_owned(), style)),
+        label_rect,
+    );
+
+    let input = Rect {
+        x: row.x + REVSET_FIELD_LABEL_WIDTH,
+        width: row.width.saturating_sub(REVSET_FIELD_LABEL_WIDTH),
+        ..row
+    };
+    f.render_widget(textarea, input);
+}
+
+/// Which field of the revset editor has the cursor.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RevsetField {
+    /// The revset the log shows. Empty means the configured default.
+    Log,
+    /// The revset to mark within what the log shows. Empty means mark nothing.
+    Mark,
+}
+
+/// The two-field revset editor popup.
+///
+/// `Tab` moves between the fields, `Ctrl+s` applies both, `Esc` cancels. Each
+/// field is independently clearable: emptying the log field restores the default
+/// revset, and emptying the mark field turns the gutter off.
+struct RevsetEditor<'a> {
+    log: TextArea<'a>,
+    mark: TextArea<'a>,
+    focus: RevsetField,
+}
+
+impl<'a> RevsetEditor<'a> {
+    fn new(log_revset: Option<&str>, mark_revset: Option<&str>) -> Self {
+        let field = |value: Option<&str>| {
+            let mut textarea = TextArea::new(
+                value
+                    .unwrap_or_default()
+                    .lines()
+                    .map(String::from)
+                    .collect(),
+            );
+            textarea.move_cursor(CursorMove::End);
+            textarea
+        };
+        Self {
+            log: field(log_revset),
+            mark: field(mark_revset),
+            focus: RevsetField::Log,
+        }
+    }
+
+    fn focused_mut(&mut self) -> &mut TextArea<'a> {
+        match self.focus {
+            RevsetField::Log => &mut self.log,
+            RevsetField::Mark => &mut self.mark,
+        }
+    }
+
+    fn toggle_focus(&mut self) {
+        self.focus = match self.focus {
+            RevsetField::Log => RevsetField::Mark,
+            RevsetField::Mark => RevsetField::Log,
+        };
+    }
+
+    /// The log revset as entered, or `None` if left empty (meaning the default).
+    fn log_revset(&self) -> Option<String> {
+        let value = self.log.lines().join("\n");
+        Some(value).filter(|value| !value.trim().is_empty())
+    }
+
+    /// The mark revset as entered, empty string if cleared.
+    fn mark_revset(&self) -> String {
+        self.mark.lines().join("\n")
+    }
+}
+
 /// Log tab. Shows `jj log` in main panel and shows selected change details of in details panel.
 pub struct LogTab<'a> {
-    /// The revset filter to apply to jj log
-    log_revset_textarea: Option<TextArea<'a>>,
+    /// The revset editor popup: which revisions the log shows, and which of them
+    /// to mark. `None` when the popup is closed.
+    ///
+    /// Both fields are edited together because they answer two halves of one
+    /// question -- what am I looking at, and what am I looking *for* -- and
+    /// keeping them in one popup means the marking expression can be written with
+    /// the log's own revset visible above it.
+    revset_editor: Option<RevsetEditor<'a>>,
 
     /// The vim-style `/` search input bar, shown at the bottom of the log
     /// panel while the user is typing a query. `None` when not searching.
     search_textarea: Option<TextArea<'a>>,
+
+    /// The file-filter input bar, shown at the bottom of the log panel while the
+    /// user is typing a path. A convenience layer over the highlight revset: it
+    /// turns a path into `files(...)` so the common case needs no revset syntax.
+    /// `None` when not entering one.
+    file_filter_textarea: Option<TextArea<'a>>,
+
+    /// A pending "widen the log's revset to the highlight expression" offer,
+    /// holding the revset it would apply. Set when a highlight matches revisions
+    /// that the log's revset excludes, so the gutter would be empty; consumed by
+    /// the next keypress, alongside the status message that advertises it.
+    pending_widen: Option<String>,
 
     /// The list of changes shown to the left
     log_panel: LogPanel<'a>,
@@ -222,7 +385,9 @@ impl<'a> LogTab<'a> {
         let pane_divider = PaneDivider::new(config.layout_percent());
 
         Ok(Self {
-            log_revset_textarea: None,
+            revset_editor: None,
+            file_filter_textarea: None,
+            pending_widen: None,
             search_textarea: None,
 
             log_panel: LogPanel::new()?,
@@ -967,6 +1132,125 @@ impl<'a> LogTab<'a> {
     /// a single keystroke; `u` undoes it. Nothing is written until every change
     /// has passed the immutability check and every template has rendered, so a
     /// batch either applies completely or not at all.
+    /// Highlight the revisions touching a path the user typed.
+    ///
+    /// Matched with jj's default `prefix-glob:` kind, so a directory marks
+    /// everything beneath it and glob characters work -- what someone typing a
+    /// path into a filter box means. The files tab, which hands over a path jj
+    /// named rather than one the user typed, matches exactly instead: see
+    /// [Self::apply_exact_file_filter].
+    ///
+    /// An empty path clears the highlight, so the filter bar can be dismissed by
+    /// submitting nothing.
+    pub fn apply_file_filter(&mut self, path: &str) -> ComponentInputResult {
+        self.apply_path_highlight(path, Commander::files_revset)
+    }
+
+    /// Highlight the revisions touching exactly `path`.
+    ///
+    /// Used by the files tab's handoff: the path came from jj's own diff summary,
+    /// so matching it exactly is unambiguous, where prefix matching would also
+    /// mark revisions touching unrelated files that merely share the prefix.
+    pub fn apply_exact_file_filter(&mut self, path: &str) -> ComponentInputResult {
+        self.apply_path_highlight(path, Commander::exact_file_fileset_revset)
+    }
+
+    /// Shared body of the two file-filter entry points: build a revset from the
+    /// path with `to_revset`, then highlight it, labelled with the path rather
+    /// than the generated `files(...)` expression.
+    fn apply_path_highlight(
+        &mut self,
+        path: &str,
+        to_revset: impl Fn(&str) -> String,
+    ) -> ComponentInputResult {
+        let path = path.trim();
+        if path.is_empty() {
+            self.clear_highlight();
+            return ComponentInputResult::Handled;
+        }
+
+        let outcome = self
+            .log_panel
+            .set_highlight(&to_revset(path), Some(path.to_owned()));
+        self.report_highlight_outcome(outcome)
+    }
+
+    /// Turn a [HighlightOutcome] into user feedback.
+    ///
+    /// The empty-gutter cases are the ones worth distinguishing: revisions match
+    /// but the log's revset hides them all (offer to widen it), nothing matches at
+    /// all (check the expression), or jj rejected the revset (show its
+    /// diagnostic, which is multi-line and genuinely useful).
+    fn report_highlight_outcome(&mut self, outcome: HighlightOutcome) -> ComponentInputResult {
+        self.pending_widen = None;
+
+        let subject = self
+            .log_panel
+            .highlight_revset()
+            .unwrap_or_default()
+            .to_owned();
+
+        match outcome {
+            HighlightOutcome::Cleared => ComponentInputResult::Handled,
+            HighlightOutcome::Applied { matching, visible } if visible > 0 => {
+                ComponentInputResult::HandledAction(AppAction::SetStatusMessage(format!(
+                    "Marking {matching} revision{} ({visible} in view)",
+                    if matching == 1 { "" } else { "s" }
+                )))
+            }
+            HighlightOutcome::Applied { matching, .. } => {
+                // Nothing to show: the revset selects revisions, but the log's own
+                // revset excludes every one of them. Offer to widen rather than
+                // silently changing what the user is looking at.
+                self.pending_widen = Some(subject);
+                let (plural, verb) = if matching == 1 {
+                    ("", "matches")
+                } else {
+                    ("s", "match")
+                };
+                ComponentInputResult::HandledAction(AppAction::SetStatusMessage(format!(
+                    "{matching} revision{plural} {verb}, none in this revset — \
+                     {WIDEN_KEY_LABEL} to show them",
+                )))
+            }
+            HighlightOutcome::NoneMatching => ComponentInputResult::HandledAction(
+                AppAction::SetStatusMessage("No revisions match".to_owned()),
+            ),
+            HighlightOutcome::Failed(err) => {
+                // The highlight is left inactive by `set_highlight`'s error path in
+                // the sense that nothing is marked; clear it so the title does not
+                // advertise a revset that never worked.
+                self.clear_highlight();
+                ComponentInputResult::HandledAction(AppAction::SetPopup(Some(Box::new(
+                    MessagePopup::new("Highlight revset", err),
+                ))))
+            }
+        }
+    }
+
+    /// Clear the highlight and any widen offer that went with it.
+    ///
+    /// The two always go together: an offer to widen the revset makes no sense once
+    /// there is no marking left to widen towards.
+    fn clear_highlight(&mut self) {
+        self.log_panel.clear_highlight();
+        self.pending_widen = None;
+    }
+
+    /// Take up the pending "widen the log's revset" offer: show exactly the
+    /// revisions the highlight selects.
+    ///
+    /// Reuses the ordinary revset path, so `Ctrl+r` afterwards shows and edits the
+    /// widened revset like any other.
+    fn accept_widen(&mut self) -> ComponentInputResult {
+        let Some(revset) = self.pending_widen.take() else {
+            return ComponentInputResult::NotHandled;
+        };
+        self.log_panel.log_revset = Some(revset);
+        self.refresh_log_output();
+        ComponentInputResult::Handled
+    }
+
     fn handle_transform_description(&mut self, index: usize) -> Result<ComponentInputResult> {
         let Some(transform) = get_env()
             .jj_config
@@ -1385,17 +1669,22 @@ impl<'a> LogTab<'a> {
                 return self.handle_transform_description(index);
             }
             LogTabEvent::EditRevset => {
-                let mut textarea = TextArea::new(
-                    self.log_panel
-                        .log_revset
-                        .as_ref()
-                        .unwrap_or(&"".to_owned())
-                        .lines()
-                        .map(String::from)
-                        .collect(),
-                );
-                textarea.move_cursor(CursorMove::End);
-                self.log_revset_textarea = Some(textarea);
+                self.revset_editor = Some(RevsetEditor::new(
+                    self.log_panel.log_revset.as_deref(),
+                    self.log_panel.highlight_revset(),
+                ));
+                return Ok(ComponentInputResult::Handled);
+            }
+            LogTabEvent::FileFilter => {
+                // The key toggles: with a filter already up, clear it rather than
+                // asking for another path.
+                if self.log_panel.has_active_highlight() {
+                    self.clear_highlight();
+                    return Ok(ComponentInputResult::Handled);
+                }
+                // Unlike search, do not apply as the user types -- each update
+                // shells out to jj.
+                self.file_filter_textarea = Some(TextArea::default());
                 return Ok(ComponentInputResult::Handled);
             }
             LogTabEvent::Search => {
@@ -1567,34 +1856,16 @@ impl Component for LogTab<'_> {
         // Draw log
         self.log_panel.draw(f, chunks[0])?;
 
-        // Draw the vim-style search bar over the bottom row of the log panel
+        // Draw the vim-style search bar over the bottom row of the log panel.
+        // Only one of these bars is ever open, since each input handler consumes
+        // the event that would open the other.
         if let Some(search_textarea) = self.search_textarea.as_mut() {
-            let log_area = chunks[0];
-            // Sit on the bottom border row of the log panel, inset past the
-            // rounded corners.
-            let bar = Rect {
-                x: log_area.x + 1,
-                y: log_area.y + log_area.height.saturating_sub(1),
-                width: log_area.width.saturating_sub(2),
-                height: 1,
-            };
-            f.render_widget(Clear, bar);
-            // "/" prompt, then the input.
-            let prompt_width = 1u16;
-            let prompt = Rect {
-                width: prompt_width.min(bar.width),
-                ..bar
-            };
-            f.render_widget(
-                Span::styled("/", Style::new().fg(Color::Yellow).bold()),
-                prompt,
-            );
-            let input = Rect {
-                x: bar.x + prompt_width,
-                width: bar.width.saturating_sub(prompt_width),
-                ..bar
-            };
-            f.render_widget(&*search_textarea, input);
+            draw_prompt_bar(f, chunks[0], "/", Color::Yellow, search_textarea);
+        }
+
+        // Draw the file-filter bar in the same place
+        if let Some(file_filter_textarea) = self.file_filter_textarea.as_mut() {
+            draw_prompt_bar(f, chunks[0], "touching:", Color::Cyan, file_filter_textarea);
         }
 
         // Draw change details
@@ -1662,34 +1933,65 @@ impl Component for LogTab<'_> {
 
         // Draw revset textarea
         {
-            if let Some(log_revset_textarea) = self.log_revset_textarea.as_mut() {
+            if let Some(revset_editor) = self.revset_editor.as_mut() {
                 let block = Block::bordered()
-                    .title(Span::styled(" Revset ", Style::new().bold().cyan()))
+                    .title(Span::styled(" Revsets ", Style::new().bold().cyan()))
                     .title_alignment(Alignment::Center)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::Green));
-                let area = centered_rect_line_height(area, 30, 7);
+                // 2 border rows + one row per field + 3 help rows (separator, hint,
+                // key list).
+                let area = centered_rect_line_height(area, 40, 7);
                 f.render_widget(Clear, area);
                 f.render_widget(&block, area);
 
                 let popup_chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Fill(1), Constraint::Length(2)])
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(3),
+                    ])
                     .split(block.inner(area));
 
-                f.render_widget(&*log_revset_textarea, popup_chunks[0]);
+                let log_focused = revset_editor.focus == RevsetField::Log;
+                draw_revset_field(
+                    f,
+                    popup_chunks[0],
+                    " Show:",
+                    log_focused,
+                    &revset_editor.log,
+                );
+                draw_revset_field(
+                    f,
+                    popup_chunks[1],
+                    " Mark:",
+                    !log_focused,
+                    &revset_editor.mark,
+                );
 
-                let help = Paragraph::new(vec!["Ctrl+s: save | Escape: cancel".into()])
-                    .fg(Color::DarkGray)
-                    .alignment(Alignment::Center)
-                    .block(
-                        Block::default()
-                            .borders(Borders::TOP)
-                            .border_type(BorderType::Rounded)
-                            .border_style(Style::default().fg(Color::DarkGray)),
-                    );
+                // Both fields take a revset, which is easy to forget on `Mark:`
+                // where a bare path is the tempting thing to type -- and would be
+                // read as a revision name. Point at the key that does accept a path.
+                let hint = if log_focused {
+                    "revisions to show, e.g. ::@ | empty: default"
+                } else {
+                    "revset to mark, e.g. conflicts() | for a path, use T"
+                };
+                let help = Paragraph::new(vec![
+                    Line::from(Span::styled(hint, Style::new().fg(Color::DarkGray))),
+                    "Tab: switch field | Ctrl+s: save | Escape: cancel".into(),
+                ])
+                .fg(Color::DarkGray)
+                .alignment(Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(Color::DarkGray)),
+                );
 
-                f.render_widget(help, popup_chunks[1]);
+                f.render_widget(help, popup_chunks[2]);
             }
         }
 
@@ -1757,28 +2059,60 @@ impl Component for LogTab<'_> {
             return Ok(ComponentInputResult::Handled);
         }
 
-        if let Some(log_revset_textarea) = self.log_revset_textarea.as_mut() {
+        if let Some(file_filter_textarea) = self.file_filter_textarea.as_mut() {
             if let Event::Key(key) = event {
-                match self.keybinds.match_event(key) {
-                    LogTabEvent::Save => {
-                        let log_revset = log_revset_textarea.lines().join("\n");
-                        self.log_panel.log_revset = if log_revset.trim().is_empty() {
-                            None
-                        } else {
-                            Some(log_revset)
-                        };
-                        self.refresh_log_output();
-                        self.log_revset_textarea = None;
+                // Enter applies the filter; Esc abandons the edit. Esc leaves any
+                // already-active highlight alone -- the key that opened this bar is
+                // itself the toggle-off.
+                match key.code {
+                    KeyCode::Enter => {
+                        let path = file_filter_textarea.lines().join("");
+                        self.file_filter_textarea = None;
+                        return Ok(self.apply_file_filter(&path));
+                    }
+                    KeyCode::Esc => {
+                        self.file_filter_textarea = None;
                         return Ok(ComponentInputResult::Handled);
                     }
+                    _ => {}
+                }
+            }
+            // Any other key edits the path. Deliberately no live update: each one
+            // would shell out to jj.
+            file_filter_textarea.input(event);
+            return Ok(ComponentInputResult::Handled);
+        }
+
+        if let Some(revset_editor) = self.revset_editor.as_mut() {
+            if let Event::Key(key) = event {
+                // Tab moves between the two fields before the keybind lookup, so a
+                // configured binding on Tab cannot shadow it inside this popup.
+                if key.code == KeyCode::Tab {
+                    revset_editor.toggle_focus();
+                    return Ok(ComponentInputResult::Handled);
+                }
+                match self.keybinds.match_event(key) {
+                    LogTabEvent::Save => {
+                        let log_revset = revset_editor.log_revset();
+                        let mark_revset = revset_editor.mark_revset();
+                        self.revset_editor = None;
+
+                        self.log_panel.log_revset = log_revset;
+                        // Apply the mark revset before refreshing, so the refresh's
+                        // own re-fetch of the highlight set is the only query --
+                        // and so `visible` is counted against the new log revset.
+                        let outcome = self.log_panel.set_highlight(&mark_revset, None);
+                        self.refresh_log_output();
+                        return Ok(self.report_highlight_outcome(outcome));
+                    }
                     LogTabEvent::Cancel => {
-                        self.log_revset_textarea = None;
+                        self.revset_editor = None;
                         return Ok(ComponentInputResult::Handled);
                     }
                     _ => (),
                 }
             }
-            log_revset_textarea.input(event);
+            revset_editor.focused_mut().input(event);
             return Ok(ComponentInputResult::Handled);
         }
 
@@ -1791,6 +2125,19 @@ impl Component for LogTab<'_> {
             // Clear the absorb highlight on the next keypress, mirroring how
             // App::status_message clears (see LogTabEvent::Absorb).
             self.log_panel.clear_absorbed_heads();
+
+            // Take up a pending "widen the log's revset" offer. Unlike the status
+            // message that first advertises it, the offer deliberately outlives the
+            // next keypress: the natural response to an empty gutter is to scroll
+            // around looking for marks, and that must not silently retire it. It is
+            // cleared when the condition behind it goes away instead -- see
+            // `report_highlight_outcome` and `clear_highlight`.
+            if self.pending_widen.is_some()
+                && key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.code == KeyCode::Char('w')
+            {
+                return Ok(self.accept_widen());
+            }
 
             if self.popup.is_opened() {
                 if matches!(
@@ -1825,6 +2172,18 @@ impl Component for LogTab<'_> {
                     }
                     _ => {}
                 }
+            }
+
+            // With a highlight active and no search to clear first, Esc clears the
+            // highlight. Search wins when both are up, keeping the pre-existing
+            // meaning of Esc unchanged.
+            if self.log_panel.has_active_highlight()
+                && !self.log_panel.has_active_search()
+                && matches!(self.pick_state, PickState::Idle)
+                && matches!(self.keybinds.match_event(key), LogTabEvent::Cancel)
+            {
+                self.clear_highlight();
+                return Ok(ComponentInputResult::Handled);
             }
 
             if !matches!(self.pick_state, PickState::Idle) {

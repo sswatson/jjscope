@@ -18,6 +18,8 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - Absorb a change's diff into its mutable ancestors with `A`
   - Generate a new change id (resolve divergence) with `c`/`C`
   - Toggle between color words and git diff with `p`
+  - Mark the revisions matching a revset with a gutter bar, leaving the graph intact — set it
+    alongside the log's own revset with `Ctrl+r`, or mark the revisions touching a path with `T`
   - See different revset with `r`
   - Set a bookmark to selected change with `b`
   - Set a tag on the selected change with `t`
@@ -31,6 +33,7 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - View conflicts list in current change
   - Toggle between color words and git diff with `w`
   - Browse the whole repo at the shown revision in your editor with `o`
+  - Mark the revisions touching the selected file on the log tab with `T`
   - Untrack file with `x`
 - Tags
   - View list of tags, including remote tags with `a`
@@ -182,6 +185,38 @@ See all key mappings for the current tab with `?`.
   be found, which is expected. While a search is active `n`/`N` navigate matches instead of
   creating changes; once it's cleared they revert to new-change
 - Display different revset with `r` (`jj log -r`)
+- Set the log's revset and the revset to *mark* within it with `Ctrl+r`. The popup has two
+  fields — `Show:` and `Mark:` — with `Tab` to switch between them, `Ctrl+s` to apply and `Esc`
+  to cancel. Both start empty: an empty `Show:` means the configured default revset, and an
+  empty `Mark:` marks nothing
+  - Every revision the `Mark:` revset selects gets a colored gutter bar (`▌`) on both of its
+    lines. Nothing else about the log changes — same revset, same graph, same node glyphs, same
+    selection highlight — so the marks read *against* the surrounding history instead of
+    replacing it. This is the difference from putting the expression in `Show:`, which filters
+    the log and throws away the context that makes the answer useful
+  - Any [revset](https://docs.jj-vcs.dev/latest/revsets/) works: `conflicts()`,
+    `description(glob:'*wip*')`, `author('alice')`, `mine()`, `files('src/ui')`. The gutter
+    composes with everything else, so a marked revision can be selected, `Space`-marked, and a
+    `/` search hit all at once
+  - The `Mark:` revset is evaluated across the whole repo, *not* intersected with `Show:`, which
+    is what lets jjscope tell "42 revisions match, none in this revset" apart from "nothing
+    matches". In the first case the panel title says so — `marking: justfile (0 of 3 in view —
+    ctrl+w to show)` — and `Ctrl+w` widens `Show:` to the marking expression. The title keeps
+    saying it for as long as it's true, since an empty gutter is exactly the thing you scroll
+    around looking at, and the offer would be useless if scrolling dismissed it. Intersecting
+    instead would just silently show nothing
+  - Marks follow revisions through rewrites: they are keyed by change id, so squashing,
+    rebasing, or describing a marked revision keeps its bar, and the set is recomputed on every
+    refresh so moving hunks between revisions moves the bars with them
+  - `Esc` clears the marking (when no `/` search is active, which `Esc` clears first).
+    Session-only, like `/` search — there is no config key for it
+- Mark the revisions touching a path with `T`, a shortcut for writing `files(...)` in the
+  `Mark:` field: type a path or [fileset](https://docs.jj-vcs.dev/latest/filesets/) and press
+  `Enter`. `T` again clears it, and the panel title shows the path
+  - A bare path uses jj's default matching (`prefix-glob:`), so `src/ui` marks everything under
+    that directory and `src/*.rs` honours the glob. Prefix it to change that: `glob:'src/**/*.rs'`,
+    `file:src/app.rs` for one exact file, `root:src` to resolve from the workspace root instead
+    of the working directory
 - Change details panel diff format between color words (default) and Git (and diff tool if set) with `w`
 - Toggle details panel wrapping with `W`
 - Create new change after highlighted change with `n` (`jj new`)
@@ -274,6 +309,13 @@ See all key mappings for the current tab with `?`.
 - Browse the whole repo at the revision being shown with `o` (same as the log tab). The files
   list only holds the files that revision *changed*, so this is how to reach everything else
   at that revision
+- Mark the revisions touching the selected file with `T`, the same key as on the log tab:
+  switches to the log tab with that file marked, so you can see its history in the graph without
+  typing or pasting the path. Matched exactly (`file:`), since the path came from jj rather than
+  from you — where a path typed on the log tab prefix-matches, so a directory works
+  - A renamed file may hand over only the changed part of its path, since jj writes renames as
+    `src/{old.rs => new.rs}`. Nothing matches in that case; retype the full path with `T` on the
+    log tab
 - Files jj refused to snapshot are listed after the revision's own files, marked `?`, with a
   count in the panel title. In practice these are files over `snapshot.max-new-file-size`:
   jj warns about them but they belong to no revision, so they appear in no diff. Selecting

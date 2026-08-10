@@ -2,6 +2,7 @@ pub mod bookmarks_tab;
 pub mod commit_show_cache;
 pub mod dialog;
 pub mod files_tab;
+pub mod highlight;
 pub mod log_tab;
 pub mod panel;
 pub mod search;
@@ -22,6 +23,12 @@ pub enum AppAction {
     ViewFiles(Head),
     ViewLog(Head),
     ChangeHead(Head),
+    /// Apply `path` as the log tab's file filter and switch to the log tab, so
+    /// the log marks every revision touching the file selected on the files tab.
+    ///
+    /// Carries a path rather than a [Head] or a fileset: the files tab knows the
+    /// exact file, so it is matched exactly.
+    FilterLogByPath(String),
     SetPopup(Option<Box<dyn Component>>),
     SetStatusMessage(String),
     Multiple(Vec<AppAction>),

@@ -26,6 +26,9 @@ use crate::keybinds::LogTabKeybinds;
 use crate::ui::AppAction;
 use crate::ui::Component;
 use crate::ui::ComponentInputResult;
+use crate::ui::highlight::HighlightOutcome;
+use crate::ui::highlight::HighlightState;
+use crate::ui::highlight::WIDEN_KEY_LABEL;
 use crate::ui::search::SearchState;
 use crate::ui::search::first_match_index_at_or_after;
 use crate::ui::search::highlight_matches;
@@ -94,6 +97,11 @@ pub struct LogPanel<'a> {
     /// Shared with the bookmarks tab via [crate::ui::search].
     search: SearchState,
 
+    /// Active highlight revset. While set, the revisions it selects get a gutter
+    /// bar (see [gutter_spans]) in a new leftmost column, leaving the rest of the
+    /// log untouched. Session-only, like [Self::search].
+    highlight: HighlightState,
+
     /// Area where panel was drawn. This includes the border.
     panel_rect: Rect,
 
@@ -112,6 +120,97 @@ const NODE_ABSORBED: char = '★';
 /// Node glyph shown in place of jj's usual node for a commit `jj absorb`
 /// rewrote only by rebasing it (no hunks moved into it).
 const NODE_REBASED: char = '☆';
+
+/// Gutter bar marking a line whose revision is in the highlight set.
+const GUTTER_MARK: &str = "▌";
+/// Stand-in keeping unhighlighted lines aligned with highlighted ones.
+const GUTTER_BLANK: &str = " ";
+/// Space between the gutter bar and the graph.
+const GUTTER_SEPARATOR: &str = " ";
+/// Colour of the gutter bar. Avoids the meanings already in play elsewhere --
+/// yellow is search and untracked files, red is conflicts and errors.
+const GUTTER_COLOR: Color = Color::Cyan;
+
+/// Longest highlight expression shown in the panel title before it is elided.
+/// A revset can be arbitrarily long, and the log's own revset shares the title.
+const TITLE_MAX_LEN: usize = 30;
+
+/// Shorten `text` for the panel title, keeping the tail off. Counts characters
+/// rather than bytes so a multi-byte path is not cut mid-character.
+fn truncate_for_title(text: &str) -> String {
+    if text.chars().count() <= TITLE_MAX_LEN {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(TITLE_MAX_LEN.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
+/// Append what is being marked to the log panel's title.
+///
+/// Appends rather than replaces, so the log's own revset stays visible in exactly
+/// the case that would otherwise be baffling: a marking that matches plenty of
+/// revisions, none of which that revset lets through. That case also names the
+/// counts and the key that widens the revset, because the status message which
+/// first reports it is gone by the next keypress -- and an empty gutter invites
+/// precisely the scrolling that clears it. On the border, the explanation stays
+/// where someone hunting for the missing marks will actually look.
+fn append_marking_to_title(
+    title: &str,
+    marking: &str,
+    errored: bool,
+    matching: usize,
+    visible: usize,
+) -> String {
+    let title = title.trim_end();
+    let marking = truncate_for_title(marking);
+
+    if errored {
+        // Say so when the revset failed, rather than showing it as though it were
+        // marking an empty set.
+        return format!("{title} — marking failed: {marking} ");
+    }
+    if matching > 0 && visible == 0 {
+        return format!(
+            "{title} — marking: {marking} (0 of {matching} in view — {WIDEN_KEY_LABEL} to show) "
+        );
+    }
+    format!("{title} — marking: {marking} ")
+}
+
+/// Set the background colour of a whole line, including past its last span so
+/// the highlight runs to the edge of the panel.
+fn set_bg(line: &mut Line, bg_color: Color) {
+    // Set background to use when no Span is present
+    // This makes the highlight continue beyond the last Span
+    line.style = line.style.patch(Style::default().bg(bg_color));
+
+    for span in line.spans.iter_mut() {
+        span.style = span.style.bg(bg_color)
+    }
+}
+
+/// The gutter spans for one log line.
+///
+/// Returns nothing at all when no highlight is active, so an unmarked log keeps
+/// its columns exactly where they were; a highlight shifts every line right by the
+/// same amount, marked or not, so the graph stays aligned with itself.
+///
+/// Split into two spans rather than one `"▌ "` so the bar's colour cannot bleed
+/// into the separator.
+pub fn gutter_spans<'s>(active: bool, highlighted: bool) -> Vec<Span<'s>> {
+    if !active {
+        return vec![];
+    }
+    let mark = if highlighted {
+        GUTTER_MARK
+    } else {
+        GUTTER_BLANK
+    };
+    vec![
+        Span::styled(mark, Style::default().fg(GUTTER_COLOR)),
+        Span::raw(GUTTER_SEPARATOR),
+    ]
+}
 
 /*
 pub enum LogPanelEvent {
@@ -181,6 +280,7 @@ impl<'a> LogPanel<'a> {
             rebased_heads: HashSet::new(),
             title_override: None,
             search: SearchState::new(),
+            highlight: HighlightState::new(),
 
             panel_rect: Rect::ZERO,
 
@@ -216,6 +316,30 @@ impl<'a> LogPanel<'a> {
                 .unwrap_or(Text::from("Could not turn text into TUI text (coloring)")),
             Err(_) => Text::default(),
         };
+
+        // Re-run the highlight revset on every refresh rather than caching it.
+        // Keying by change ID keeps the set valid across the commit-ID rewrites
+        // that operations perform, but not across changes in what the revset
+        // *selects*: squashing moves hunks between revisions, so `files(...)`
+        // legitimately picks a different set afterwards. Refetching is one extra
+        // `jj log` on a path that already runs two.
+        self.refresh_highlight();
+    }
+
+    /// Re-run the active highlight revset, if any, and store the result.
+    fn refresh_highlight(&mut self) {
+        let Some(revset) = self.highlight.revset().map(str::to_owned) else {
+            return;
+        };
+        let label = self.highlight.display().map(str::to_owned);
+        // `display()` falls back to the revset, so only keep it as a label when
+        // it is genuinely a different, friendlier string.
+        let label = label.filter(|label| label != &revset);
+
+        match new_commander().get_changes_in(&revset) {
+            Ok(matching) => self.highlight.set(revset, label, matching),
+            Err(_) => self.highlight.set_errored(revset, label),
+        }
     }
 
     /// Convert log output to a list of formatted lines
@@ -225,23 +349,32 @@ impl<'a> LogPanel<'a> {
     /// `log_output.graph`, see [Self::refresh_log_output]), rather than by
     /// adding a separate gutter mark, so the selection reads as "this node,
     /// right here" instead of an extra column to parse.
+    ///
+    /// The highlight set is the exception: it *does* get a gutter column, because
+    /// unlike a mark it has to be readable at the same time as the node glyph,
+    /// `@`, and the selection -- a glyph swap can only show one thing at a time.
     fn output_to_lines(&self, log_output: &LogOutput) -> Vec<Line<'a>> {
-        // Set the background color of the line
-        fn set_bg(line: &mut Line, bg_color: Color) {
-            // Set background to use when no Span is present
-            // This makes the highlight continue beyond the last Span
-            line.style = line.style.patch(Style::default().bg(bg_color));
-
-            for span in line.spans.iter_mut() {
-                span.style = span.style.bg(bg_color)
-            }
-        }
+        let highlighting = self.highlight.is_active();
 
         self.log_output_text
             .iter()
             .enumerate()
             .map(|(i, line)| {
                 let mut line = line.to_owned();
+
+                // Prepend the gutter before anything else, so the selection
+                // background below paints it too and the selected row reads as one
+                // continuous band instead of a bar floating outside the highlight.
+                // `head_at` is None for the synthetic "(elided revisions)" row,
+                // which correctly gets a blank rather than a mark.
+                if highlighting {
+                    let highlighted = log_output
+                        .head_at(i)
+                        .is_some_and(|head| self.highlight.matches(head));
+                    for span in gutter_spans(true, highlighted).into_iter().rev() {
+                        line.spans.insert(0, span);
+                    }
+                }
 
                 // Highlight lines that correspond to self.head first, so the
                 // search match (applied after) wins on the selected line and
@@ -379,6 +512,71 @@ impl<'a> LogPanel<'a> {
         let commit_ids = self.marked_heads.drain().collect();
         self.refresh_log_output();
         commit_ids
+    }
+
+    //
+    //  Highlight revset
+    //
+
+    /// Whether a highlight revset is currently active.
+    pub fn has_active_highlight(&self) -> bool {
+        self.highlight.is_active()
+    }
+
+    /// The active highlight revset, or `None`.
+    pub fn highlight_revset(&self) -> Option<&str> {
+        self.highlight.revset()
+    }
+
+    /// Apply `revset` as the highlight set, fetching the revisions it selects.
+    /// An empty or whitespace-only revset clears the highlight.
+    ///
+    /// `label` replaces the revset in the panel title, for revsets built on the
+    /// user's behalf (a file filter shows the path, not the `files(...)` wrapper).
+    ///
+    /// Returns what happened so the caller can pick the right feedback: an empty
+    /// gutter means something different when the revset matches nothing than when
+    /// it matches plenty of revisions that are all outside the log's own revset.
+    pub fn set_highlight(&mut self, revset: &str, label: Option<String>) -> HighlightOutcome {
+        let revset = revset.trim();
+        if revset.is_empty() {
+            self.highlight.clear();
+            return HighlightOutcome::Cleared;
+        }
+
+        match new_commander().get_changes_in(revset) {
+            Ok(matching) => {
+                self.highlight.set(revset.to_owned(), label, matching);
+                if self.highlight.matching_count() == 0 {
+                    return HighlightOutcome::NoneMatching;
+                }
+                HighlightOutcome::Applied {
+                    matching: self.highlight.matching_count(),
+                    visible: self.visible_highlight_count(),
+                }
+            }
+            Err(err) => {
+                let message = format!("{err}");
+                self.highlight.set_errored(revset.to_owned(), label);
+                HighlightOutcome::Failed(message)
+            }
+        }
+    }
+
+    /// How many of the revisions currently shown in the log are highlighted.
+    ///
+    /// Distinct from [HighlightState::matching_count], which counts the whole
+    /// repo: a revset can select many revisions with none of them in view.
+    fn visible_highlight_count(&self) -> usize {
+        self.log_heads()
+            .iter()
+            .filter(|head| self.highlight.matches(head))
+            .count()
+    }
+
+    /// Clear the highlight revset.
+    pub fn clear_highlight(&mut self) {
+        self.highlight.clear();
     }
 
     //
@@ -545,11 +743,21 @@ impl Component for LogPanel<'_> {
     fn draw(&mut self, f: &mut Frame<'_>, area: Rect) -> Result<()> {
         self.panel_rect = area;
 
-        let title = match (&self.title_override, &self.log_revset) {
+        let mut title = match (&self.title_override, &self.log_revset) {
             (Some(title_override), _) => title_override.clone(),
             (None, Some(log_revset)) => format!(" Log for: {log_revset} "),
             (None, None) => " Log ".to_owned(),
         };
+
+        if let Some(highlighted) = self.highlight.display() {
+            title = append_marking_to_title(
+                &title,
+                highlighted,
+                self.highlight.errored(),
+                self.highlight.matching_count(),
+                self.visible_highlight_count(),
+            );
+        }
 
         let log_lines = self.log_lines();
         let log_length: usize = log_lines.len();
@@ -650,4 +858,156 @@ fn list_item_from_mouse_event(
         return None;
     }
     Some(item_index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::search::highlight_matches;
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// A log line with the gutter already prepended, as `output_to_lines` builds
+    /// it.
+    fn gutter_line(highlighted: bool) -> Line<'static> {
+        let mut line = Line::from("○  kntqzsrq fix path handling");
+        for span in gutter_spans(true, highlighted).into_iter().rev() {
+            line.spans.insert(0, span);
+        }
+        line
+    }
+
+    #[test]
+    fn gutter_is_absent_when_no_highlight_is_active() {
+        // The column-shift guarantee: with no highlight, the log's columns are
+        // exactly where they were before this feature existed.
+        assert!(gutter_spans(false, false).is_empty());
+        assert!(gutter_spans(false, true).is_empty());
+    }
+
+    #[test]
+    fn marked_and_unmarked_gutters_are_the_same_width() {
+        // Unequal widths would stagger the graph between marked and unmarked rows.
+        let width = |highlighted| -> usize {
+            gutter_spans(true, highlighted)
+                .iter()
+                .map(|span| span.content.chars().count())
+                .sum()
+        };
+        let expected = GUTTER_MARK.chars().count() + GUTTER_SEPARATOR.chars().count();
+        assert_eq!(width(true), expected);
+        assert_eq!(width(false), expected);
+    }
+
+    #[test]
+    fn only_the_marked_gutter_draws_a_bar() {
+        assert_eq!(
+            line_text(&gutter_line(true)),
+            "▌ ○  kntqzsrq fix path handling"
+        );
+        assert_eq!(
+            line_text(&gutter_line(false)),
+            "  ○  kntqzsrq fix path handling"
+        );
+    }
+
+    #[test]
+    fn gutter_survives_the_selection_background() {
+        // The gutter is prepended before the selection is painted, so the bar sits
+        // inside the highlight band rather than leaving a hole at its left edge --
+        // and keeps its own foreground colour, since set_bg only sets `bg`.
+        let mut line = gutter_line(true);
+        set_bg(&mut line, Color::Rgb(50, 50, 150));
+
+        let bar = line.spans.first().expect("gutter span");
+        assert_eq!(bar.content.as_ref(), GUTTER_MARK);
+        assert_eq!(bar.style.bg, Some(Color::Rgb(50, 50, 150)));
+        assert_eq!(bar.style.fg, Some(GUTTER_COLOR));
+    }
+
+    #[test]
+    fn gutter_survives_a_search_highlight() {
+        // `highlight_matches` flattens the line and rebuilds every span, so the
+        // gutter has to come through that intact.
+        let mut line = gutter_line(true);
+        highlight_matches(&mut line, "path");
+
+        assert_eq!(line_text(&line), "▌ ○  kntqzsrq fix path handling");
+        let bar = line.spans.first().expect("gutter span");
+        assert_eq!(bar.content.as_ref(), GUTTER_MARK);
+        assert_eq!(bar.style.fg, Some(GUTTER_COLOR));
+    }
+
+    #[test]
+    fn truncate_for_title_leaves_short_text_alone() {
+        assert_eq!(truncate_for_title("src/app.rs"), "src/app.rs");
+    }
+
+    #[test]
+    fn truncate_for_title_elides_a_long_revset() {
+        let long = "description(glob:'*something quite long here*')";
+        let truncated = truncate_for_title(long);
+        assert_eq!(truncated.chars().count(), TITLE_MAX_LEN);
+        assert!(truncated.ends_with('…'), "got {truncated:?}");
+    }
+
+    #[test]
+    fn truncate_for_title_counts_characters_not_bytes() {
+        // A path of multi-byte characters must not be cut mid-character.
+        let wide = "é".repeat(TITLE_MAX_LEN + 10);
+        let truncated = truncate_for_title(&wide);
+        assert_eq!(truncated.chars().count(), TITLE_MAX_LEN);
+    }
+
+    #[test]
+    fn title_names_what_is_being_marked() {
+        assert_eq!(
+            append_marking_to_title(" Log ", "src/app.rs", false, 3, 3),
+            " Log — marking: src/app.rs "
+        );
+    }
+
+    #[test]
+    fn title_keeps_the_logs_own_revset() {
+        // Both halves matter: what am I looking at, and what am I looking for.
+        assert_eq!(
+            append_marking_to_title(" Log for: ::@ ", "conflicts()", false, 2, 1),
+            " Log for: ::@ — marking: conflicts() "
+        );
+    }
+
+    #[test]
+    fn title_explains_an_empty_gutter_and_offers_the_way_out() {
+        // The regression this guards: with matches that the log's revset excludes,
+        // the gutter is empty and the status message reporting why is gone by the
+        // next keypress. The title has to carry it.
+        let title = append_marking_to_title(" Log ", "justfile", false, 3, 0);
+        assert_eq!(
+            title,
+            format!(" Log — marking: justfile (0 of 3 in view — {WIDEN_KEY_LABEL} to show) ")
+        );
+    }
+
+    #[test]
+    fn title_does_not_offer_to_widen_when_marks_are_visible() {
+        let title = append_marking_to_title(" Log ", "justfile", false, 3, 1);
+        assert!(!title.contains(WIDEN_KEY_LABEL), "got {title:?}");
+    }
+
+    #[test]
+    fn title_does_not_offer_to_widen_when_nothing_matches() {
+        // Nothing to widen towards, so no offer -- an empty gutter is the answer.
+        let title = append_marking_to_title(" Log ", "no/such/path", false, 0, 0);
+        assert_eq!(title, " Log — marking: no/such/path ");
+    }
+
+    #[test]
+    fn title_reports_a_failed_revset_as_failed() {
+        // Never shown as though it were marking an empty set.
+        let title = append_marking_to_title(" Log ", "bogusfn(", true, 0, 0);
+        assert_eq!(title, " Log — marking failed: bogusfn( ");
+        assert!(!title.contains(WIDEN_KEY_LABEL), "got {title:?}");
+    }
 }

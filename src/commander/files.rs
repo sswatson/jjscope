@@ -101,6 +101,28 @@ static FILES_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(.) (.*)").u
 static RENAME_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{(.*?) => (.*?)\}").unwrap());
 static CONFLICTS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(.*)    .*").unwrap());
 
+/// jj's fileset pattern kinds, as accepted in a `kind:pattern` prefix. Used by
+/// [Commander::quote_fileset] to tell an explicit pattern kind apart from a
+/// plain path that merely contains a colon.
+///
+/// From `jj help -k filesets` (jj 0.44). Note there is no `regex:` kind -- an
+/// unrecognized prefix here is quoted as part of the path instead, which makes
+/// jj match it literally rather than fail, so a wrong entry degrades to "no
+/// matches" rather than an error.
+const FILESET_PATTERN_KINDS: &[&str] = &[
+    "cwd",
+    "cwd-file",
+    "cwd-glob",
+    "cwd-prefix-glob",
+    "file",
+    "glob",
+    "prefix-glob",
+    "root",
+    "root-file",
+    "root-glob",
+    "root-prefix-glob",
+];
+
 impl Commander {
     /// Get list of changes files in a change. Parses the output.
     /// Maps to `jj diff --summary -r <revision>`
@@ -419,6 +441,55 @@ impl Commander {
             "file:\"{}\"",
             path.replace("\\", "\\\\").replace('"', "\\\"")
         )
+    }
+
+    /// The revset selecting every revision that modifies exactly `path`.
+    ///
+    /// Used by the files tab's "mark the revisions touching this file" handoff,
+    /// where the path came from jj's diff summary rather than from the user, so
+    /// matching it exactly is unambiguous. Typed input goes through
+    /// [Self::files_revset] instead, whose default `prefix-glob:` kind lets a
+    /// directory or a glob work.
+    pub(crate) fn exact_file_fileset_revset(path: &str) -> String {
+        format!("files({})", Self::get_file_revset(path))
+    }
+
+    /// Quote a user-typed fileset for interpolation into a revset expression.
+    ///
+    /// A bare value is quoted whole, which gives it jj's *default* pattern kind
+    /// (`prefix-glob:`) -- so `src/ui` matches everything under that directory
+    /// and `src/*.rs` honours the glob, which is what "touching this path" means
+    /// to a user. Quoting the whole thing would break an explicit pattern kind,
+    /// though: jj reads `files("glob:src/**")` as a file literally *named*
+    /// `glob:src/**` and matches nothing, where `files(glob:"src/**")` matches
+    /// as intended. So a recognized `kind:` prefix is kept outside the quotes.
+    ///
+    /// Only a prefix from [FILESET_PATTERN_KINDS] is split off, so a plain path
+    /// that happens to contain a colon (`weird:name.txt`, `C:\repo\f.txt`) is
+    /// still quoted whole rather than being read as an unknown pattern kind --
+    /// which jj would reject outright.
+    fn quote_fileset(fileset: &str) -> String {
+        fn quote(value: &str) -> String {
+            format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+        }
+
+        if let Some((kind, rest)) = fileset.split_once(':')
+            && FILESET_PATTERN_KINDS.contains(&kind)
+        {
+            return format!("{kind}:{}", quote(rest));
+        }
+
+        quote(fileset)
+    }
+
+    /// The revset that selects every revision modifying `fileset`.
+    ///
+    /// Kept separate from running it so the same expression can be handed to
+    /// [Commander::get_changes_in][crate::commander::Commander::get_changes_in]
+    /// to mark revisions, or dropped straight into the log's revset field to
+    /// filter by it.
+    pub(crate) fn files_revset(fileset: &str) -> String {
+        format!("files({})", Self::quote_fileset(fileset))
     }
 
     /// The post-change path of a file, resolving a rename to its new name.
@@ -1316,5 +1387,190 @@ Warning: Refused to snapshot some files:
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod files_revset_tests {
+    use std::fs;
+
+    use super::*;
+    use crate::commander::tests::TestRepo;
+
+    #[test]
+    fn files_revset_selects_only_the_touching_change() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        fs::write(test_repo.directory.path().join("a.txt"), b"A")?;
+        let touching = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([touching.commit_id.as_str()])?;
+        fs::write(test_repo.directory.path().join("b.txt"), b"B")?;
+        let other = test_repo.commander.get_current_head()?;
+
+        let changes = test_repo
+            .commander
+            .get_changes_in(&Commander::files_revset("a.txt"))?;
+
+        assert!(changes.contains(&touching.change_id), "got {changes:?}");
+        assert!(!changes.contains(&other.change_id), "got {changes:?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn files_revset_matches_a_whole_directory() -> Result<()> {
+        // A bare path uses jj's default pattern kind (`prefix-glob:`), so naming
+        // a directory matches everything under it. Regression test: quoting the
+        // fileset as `file:"dir"` instead would make this exact-match and find
+        // nothing, silently breaking every directory and glob query.
+        let test_repo = TestRepo::new()?;
+
+        fs::create_dir(test_repo.directory.path().join("dir"))?;
+        fs::write(test_repo.directory.path().join("dir/f.txt"), b"A")?;
+        let head = test_repo.commander.get_current_head()?;
+
+        let changes = test_repo
+            .commander
+            .get_changes_in(&Commander::files_revset("dir"))?;
+
+        assert!(changes.contains(&head.change_id), "got {changes:?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn files_revset_honours_an_explicit_pattern_kind() -> Result<()> {
+        // A recognized `kind:` prefix stays outside the quotes, so jj applies the
+        // kind instead of reading it as part of the filename.
+        let test_repo = TestRepo::new()?;
+
+        fs::write(test_repo.directory.path().join("f.rs"), b"A")?;
+        let head = test_repo.commander.get_current_head()?;
+
+        let changes = test_repo
+            .commander
+            .get_changes_in(&Commander::files_revset("glob:*.rs"))?;
+        assert!(changes.contains(&head.change_id), "got {changes:?}");
+
+        // `file:` is exact, so the directory-style prefix match must NOT apply.
+        let exact = test_repo
+            .commander
+            .get_changes_in(&Commander::files_revset("file:f.rs"))?;
+        assert!(exact.contains(&head.change_id), "got {exact:?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn files_revset_nonexistent_path_is_empty_not_an_error() -> Result<()> {
+        // An empty result and an error are different outcomes: the UI says "no
+        // revisions touch this" for one and shows jj's diagnostic for the other.
+        let test_repo = TestRepo::new()?;
+
+        fs::write(test_repo.directory.path().join("a.txt"), b"A")?;
+
+        let changes = test_repo
+            .commander
+            .get_changes_in(&Commander::files_revset("no/such/path"))?;
+
+        assert!(changes.is_empty(), "got {changes:?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn files_revset_malformed_pattern_errors() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        let result = test_repo
+            .commander
+            .get_changes_in(&Commander::files_revset("glob:["));
+
+        assert!(result.is_err(), "expected an error, got {result:?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn files_revset_survives_a_rewrite() -> Result<()> {
+        // The set is keyed by CHANGE id so it stays valid across the commit-id
+        // rewrite that every jj operation performs. Keying by commit id would
+        // drop the mark from a revision that still touches the file.
+        let test_repo = TestRepo::new()?;
+
+        fs::write(test_repo.directory.path().join("a.txt"), b"A")?;
+        let before = test_repo.commander.get_current_head()?;
+
+        test_repo
+            .commander
+            .run_describe(before.commit_id.as_str(), "rewritten")?;
+
+        let after = test_repo
+            .commander
+            .get_change_head(&before.change_id)?
+            .expect("change should still exist after describe");
+
+        // The rewrite really did change the commit id, so this test is
+        // meaningful rather than vacuous.
+        assert_ne!(after.commit_id, before.commit_id);
+        assert_eq!(after.change_id, before.change_id);
+
+        let changes = test_repo
+            .commander
+            .get_changes_in(&Commander::files_revset("a.txt"))?;
+        assert!(changes.contains(&before.change_id), "got {changes:?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn quote_fileset_quotes_a_bare_path() {
+        assert_eq!(Commander::quote_fileset("src/app.rs"), r#""src/app.rs""#);
+    }
+
+    #[test]
+    fn quote_fileset_escapes_quotes_and_backslashes() {
+        assert_eq!(Commander::quote_fileset(r#"a"b"#), r#""a\"b""#);
+        assert_eq!(Commander::quote_fileset(r"a\b"), r#""a\\b""#);
+    }
+
+    #[test]
+    fn quote_fileset_keeps_a_known_pattern_kind_outside_the_quotes() {
+        assert_eq!(
+            Commander::quote_fileset("glob:src/**/*.rs"),
+            r#"glob:"src/**/*.rs""#
+        );
+        assert_eq!(
+            Commander::quote_fileset("root-file:src/app.rs"),
+            r#"root-file:"src/app.rs""#
+        );
+    }
+
+    #[test]
+    fn quote_fileset_treats_an_unknown_prefix_as_part_of_the_path() {
+        // A colon in a plain filename must not be mistaken for a pattern kind --
+        // jj rejects an unknown kind outright, so splitting here would turn a
+        // valid (if unusual) path into a hard error.
+        assert_eq!(
+            Commander::quote_fileset("weird:name.txt"),
+            r#""weird:name.txt""#
+        );
+    }
+
+    #[test]
+    fn exact_file_fileset_revset_is_an_exact_match() {
+        // The files-tab handoff names a concrete file, so it matches exactly
+        // rather than as a directory prefix.
+        assert_eq!(
+            Commander::exact_file_fileset_revset("src/app.rs"),
+            r#"files(file:"src/app.rs")"#
+        );
+    }
+
+    #[test]
+    fn files_revset_uses_the_default_pattern_kind() {
+        // No `file:` prefix, so jj applies `prefix-glob:` -- a directory matches
+        // everything under it.
+        assert_eq!(Commander::files_revset("src/ui"), r#"files("src/ui")"#);
     }
 }
