@@ -187,7 +187,8 @@ impl Commander {
             args.push("--ignore-working-copy");
         }
 
-        Ok(self.jj(args).color().run()?.remove_end_line())
+        // Rendered, never parsed -- see [Command::run_lossy].
+        Ok(self.jj(args).color().run_lossy()?.remove_end_line())
     }
 
     /// Create or move a tag onto a revision.

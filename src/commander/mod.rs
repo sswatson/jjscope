@@ -288,6 +288,24 @@ impl JjCommand<'_> {
         Ok(String::from_utf8(stdout)?)
     }
 
+    /// Execute the command and return its standard output, replacing any
+    /// undecodable bytes with `U+FFFD` instead of failing.
+    ///
+    /// For output that is only ever rendered, never parsed. jj itself detects
+    /// binary content and prints a placeholder rather than the bytes, but a
+    /// `--tool` diff format hands the external tool's stdout through verbatim,
+    /// and such a tool may emit raw file contents. Failing there would blank
+    /// the whole preview pane over one unreadable file, so garble that file's
+    /// diff instead and keep the pane working.
+    ///
+    /// Do not use for output that is parsed: lossy decoding silently rewrites
+    /// bytes, which would corrupt a path or template field rather than
+    /// reporting that it could not be read.
+    pub fn run_lossy(self) -> Result<String, CommandError> {
+        let (stdout, _stderr) = self.execute(Stdio::piped())?;
+        Ok(String::from_utf8_lossy(&stdout).into_owned())
+    }
+
     /// Execute the command, discarding its output.
     pub fn run_void(self) -> Result<(), CommandError> {
         // The output isn't used, so don't bother capturing or decoding it.

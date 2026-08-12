@@ -185,7 +185,22 @@ pub fn centered_rect_fixed(area: Rect, width: u16, height: u16) -> Rect {
 /// this function aligns tabs in the input string to
 /// virtual tab stops 4 spaces apart, taking care
 /// to count ansi control sequences as zero width.
+///
+/// unprintable control characters are also replaced, via
+/// [scrub_control_chars], and undecodable runs are collapsed,
+/// via [elide_binary_lines]; the passes are combined here
+/// because every string that is rendered needs all three.
+///
+/// order matters: scrubbing runs first so control bytes are
+/// resolved before any width is measured, and eliding before
+/// tab expansion means a dropped line's tabs are never
+/// expanded. the two passes use different substitute
+/// characters precisely so scrubbing cannot feed elision.
 pub fn tabs_to_spaces(line: &str) -> String {
+    tabs_to_spaces_inner(&elide_binary_lines(&scrub_control_chars(line)))
+}
+
+fn tabs_to_spaces_inner(line: &str) -> String {
     const TAB_WIDTH: usize = 4;
 
     enum AnsiState {
@@ -239,6 +254,75 @@ pub fn tabs_to_spaces(line: &str) -> String {
     out
 }
 
+/// Fraction of a line that must be undecodable before it is elided by
+/// [elide_binary_lines]. Well above what real text hits -- a diff of UTF-8
+/// prose decodes cleanly, and even a stray mis-encoded byte is a small share of
+/// its line -- and well below the ~20% or more that raw binary produces.
+const BINARY_LINE_THRESHOLD: f32 = 0.15;
+
+/// Replaces runs of undecodable content with a short placeholder line.
+///
+/// The per-file binary check in the files pane cannot help the log pane: `jj
+/// show` accepts revsets only, with no fileset argument, so a revision's binary
+/// files cannot be filtered out of its diff. Their bytes therefore reach the
+/// renderer, and after lossy decoding they arrive as dense `U+FFFD` runs.
+///
+/// A line is judged binary by the share of it that failed to decode, which
+/// separates the two cases cleanly: text stays near zero even when it contains
+/// an occasional bad byte, while raw binary is a large fraction. Consecutive
+/// binary lines collapse into one placeholder so a large file does not push the
+/// real diff off screen.
+pub fn elide_binary_lines(text: &str) -> String {
+    let mut out = String::new();
+    let mut eliding = false;
+
+    for line in text.split_inclusive('\n') {
+        let total = line.chars().filter(|c| !c.is_whitespace()).count();
+        let undecodable = line.chars().filter(|&c| c == '\u{fffd}').count();
+        let is_binary = total > 0 && (undecodable as f32 / total as f32) >= BINARY_LINE_THRESHOLD;
+
+        if is_binary {
+            // Collapse a run of binary lines into a single placeholder.
+            if !eliding {
+                out.push_str("    (binary content omitted)\n");
+                eliding = true;
+            }
+        } else {
+            out.push_str(line);
+            eliding = false;
+        }
+    }
+
+    out
+}
+
+/// Replaces unprintable C0 control characters with `U+FFFD`.
+///
+/// jj's binary detection is NUL-byte based, so a file that contains stray
+/// control bytes but no NUL is still diffed as text and those bytes reach the
+/// renderer. ratatui draws them as zero-width or garbage cells, which corrupts
+/// the layout of every following column, so they are made visible instead.
+///
+/// Tab, carriage return and newline are kept: they are meaningful layout
+/// characters, and tabs are expanded separately by [tabs_to_spaces]. Escape is
+/// kept too, since jj's output is colored and the escape sequences that carry
+/// that styling are parsed downstream by `ansi-to-tui`.
+///
+/// The substitute is `U+2426`, not the `U+FFFD` that lossy decoding produces:
+/// [elide_binary_lines] counts `U+FFFD` to judge a line binary, and a readable
+/// line that merely contains control bytes must not be mistaken for one.
+pub fn scrub_control_chars(line: &str) -> String {
+    line.chars()
+        .map(|c| match c {
+            '\t' | '\r' | '\n' | '\x1b' => c,
+            // C0 controls plus DEL. Other Unicode control characters are left
+            // alone; they are rare in diffs and may be legitimate content.
+            c if c.is_control() && (c < '\u{20}' || c == '\u{7f}') => '\u{2426}',
+            c => c,
+        })
+        .collect()
+}
+
 /// Render a jj error message as styled text.
 ///
 /// jj is run with `--color always`, so its errors arrive carrying ANSI escapes.
@@ -260,6 +344,67 @@ pub fn error_text(message: &str) -> Text<'static> {
 #[cfg(test)]
 mod error_text_tests {
     use super::*;
+
+    #[test]
+    fn scrub_control_chars_replaces_unprintables() {
+        // jj's binary detection keys on NUL, so a file with other stray control
+        // bytes is diffed as text and those bytes reach the renderer.
+        assert_eq!(
+            scrub_control_chars("ok\x00\x01\x02"),
+            "ok\u{2426}\u{2426}\u{2426}"
+        );
+        assert_eq!(scrub_control_chars("bell\x07"), "bell\u{2426}");
+        assert_eq!(scrub_control_chars("del\x7f"), "del\u{2426}");
+    }
+
+    #[test]
+    fn scrub_control_chars_does_not_trip_binary_elision() {
+        // A readable line that merely contains control bytes must survive both
+        // passes: the scrubber's marker is deliberately not the one elision
+        // counts.
+        let text = "ok\n\x00\x00control-bytes\x07here\n";
+        let rendered = tabs_to_spaces(text);
+        assert!(
+            rendered.contains("control-bytes"),
+            "line was elided: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn elide_binary_lines_collapses_undecodable_runs() {
+        // Lossy decoding turns binary into dense U+FFFD; consecutive such lines
+        // collapse to a single placeholder.
+        let text = "keep me\n\u{fffd}\u{fffd}\u{fffd}\u{fffd}\n\u{fffd}\u{fffd}\u{fffd}\u{fffd}\nkeep me too\n";
+        let elided = elide_binary_lines(text);
+        assert_eq!(
+            elided,
+            "keep me\n    (binary content omitted)\nkeep me too\n"
+        );
+    }
+
+    #[test]
+    fn elide_binary_lines_keeps_mostly_text_lines() {
+        // One bad byte in a line of prose is far below the threshold.
+        let text = "a mostly readable line with one \u{fffd} bad byte\n";
+        assert_eq!(elide_binary_lines(text), text);
+    }
+
+    #[test]
+    fn scrub_control_chars_keeps_layout_and_ansi() {
+        // Tabs, newlines and carriage returns carry layout, and the escape
+        // character introduces the color sequences parsed downstream. Scrubbing
+        // any of them would break rendering rather than fix it.
+        assert_eq!(scrub_control_chars("a\tb\r\nc"), "a\tb\r\nc");
+        let colored = "\x1b[1mbold\x1b[0m";
+        assert_eq!(scrub_control_chars(colored), colored);
+    }
+
+    #[test]
+    fn tabs_to_spaces_scrubs_and_aligns() {
+        // Scrubbing runs first, so the substitute character occupies a column
+        // and the following tab advances to the next 4-wide stop.
+        assert_eq!(tabs_to_spaces("\x00\tx"), "\u{2426}   x");
+    }
 
     #[test]
     fn error_text_parses_ansi_into_styles() {

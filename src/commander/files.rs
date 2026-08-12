@@ -96,6 +96,14 @@ impl DiffType {
     }
 }
 
+/// How `jj diff --stat` marks a binary file in the change column of its
+/// per-file row, e.g. `blob.bin | (binary) +200 bytes`.
+const BINARY_STAT_MARKER: &str = "(binary)";
+
+/// Shown in the diff pane in place of a binary file's diff. Mirrors the wording
+/// jj's own `--color-words` format uses, so the two formats read the same.
+const BINARY_PLACEHOLDER: &str = "    (binary)";
+
 // Example line: `A README.md`, `M src/main.rs`, `D Hello World`
 static FILES_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(.) (.*)").unwrap());
 static RENAME_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{(.*?) => (.*?)\}").unwrap());
@@ -310,13 +318,61 @@ impl Commander {
         };
 
         let fileset = Self::get_file_revset(path);
+
+        // jj's own diff formats print a placeholder for binary files, but a
+        // `--tool` format pipes the external tool's stdout through untouched,
+        // and such a tool may dump raw file contents. Ask jj whether the file
+        // is binary first and render our own placeholder if so, rather than
+        // filling the pane with mojibake.
+        if matches!(diff_format, DiffFormat::DiffTool(_))
+            && self.is_file_binary(head, &fileset, ignore_working_copy)?
+        {
+            return Ok(Some(BINARY_PLACEHOLDER.to_owned()));
+        }
+
         let mut args = vec!["diff", "-r", head.commit_id.as_str(), &fileset];
         args.append(&mut diff_format.get_args());
         if ignore_working_copy {
             args.push("--ignore-working-copy");
         }
 
-        self.jj(args).color().run().map(Some)
+        // Rendered, never parsed -- see [Command::run_lossy]. A diff tool that
+        // emits undecodable bytes garbles its own output instead of taking the
+        // whole preview pane down with it.
+        self.jj(args).color().run_lossy().map(Some)
+    }
+
+    /// Whether jj considers the single file selected by `fileset` to be binary.
+    ///
+    /// Asks `jj diff --stat`, whose per-file row reads `<path> | (binary) +N
+    /// bytes` for a binary file and `<path> | N +-` for a text one. The fileset
+    /// selects one file, so the marker is looked for anywhere in the rows
+    /// rather than matched against a path: `--stat` elides the front of a long
+    /// path with `...`, which would defeat matching, and a *file* named
+    /// `(binary) trap.txt` cannot produce a false positive because its row is
+    /// the only one and its marker sits left of the `|` column separator.
+    ///
+    /// The trailing summary line (`1 file changed, ...`) never contains the
+    /// marker, so it is skipped implicitly.
+    #[instrument(level = "trace", skip(self))]
+    fn is_file_binary(
+        &self,
+        head: &Head,
+        fileset: &str,
+        ignore_working_copy: bool,
+    ) -> Result<bool, CommandError> {
+        let mut args = vec!["diff", "-r", head.commit_id.as_str(), fileset, "--stat"];
+        if ignore_working_copy {
+            args.push("--ignore-working-copy");
+        }
+
+        // No .color(): the markers are matched literally, so styling would only
+        // interleave escape sequences into the text being searched.
+        let stat = self.jj(args).run()?;
+        Ok(stat
+            .lines()
+            .filter_map(|line| line.split_once('|'))
+            .any(|(_path, change)| change.contains(BINARY_STAT_MARKER)))
     }
 
     #[instrument(level = "trace", skip(self))]
@@ -790,6 +846,116 @@ mod tests {
                 true
             )?);
         }
+
+        Ok(())
+    }
+
+    /// Register a real external diff tool on `test_repo` and return the format
+    /// that selects it.
+    ///
+    /// jj invokes a diff tool with two *directory* paths, so the stand-in is
+    /// `diff -r`, which is present anywhere the rest of this suite already
+    /// assumes a POSIX toolchain. `--tool` accepts a program name only, so the
+    /// arguments have to come from a `merge-tools` entry.
+    fn register_diff_tool(test_repo: &mut TestRepo) -> DiffFormat {
+        let config = test_repo
+            .commander
+            .jj_config_toml
+            .get_or_insert_with(Vec::new);
+        config.push(r#"merge-tools.dirdiff.program="diff""#.to_owned());
+        config.push(r#"merge-tools.dirdiff.diff-args=["-r","$left","$right"]"#.to_owned());
+        DiffFormat::DiffTool(Some("dirdiff".to_owned()))
+    }
+
+    /// A binary file gets the placeholder instead of the diff tool's raw bytes.
+    ///
+    /// jj's own formats already print a placeholder, so the regression this
+    /// pins down is the `--tool` path, where jj passes the tool's stdout
+    /// through verbatim. `cat` stands in for a real tool that dumps file
+    /// contents; without the binary check its output is undecodable bytes.
+    #[test]
+    fn get_file_diff_binary_with_diff_tool() -> Result<()> {
+        let mut test_repo = TestRepo::new()?;
+        let diff_format = register_diff_tool(&mut test_repo);
+
+        // Invalid UTF-8 (a lone continuation byte) plus a NUL, so the content
+        // is both binary to jj and undecodable to Rust.
+        fs::write(
+            test_repo.directory.path().join("blob.bin"),
+            b"\x00\x01\x02\xff\xfe binary \x80\x00",
+        )?;
+        let file = File {
+            path: Some("blob.bin".to_string()),
+            diff_type: Some(DiffType::Added),
+            line: "A blob.bin".to_string(),
+        };
+
+        let head = test_repo.commander.get_current_head()?;
+        let diff = test_repo
+            .commander
+            .get_file_diff(&head, &file, &diff_format, false)?;
+
+        assert_eq!(diff.as_deref(), Some(BINARY_PLACEHOLDER));
+
+        Ok(())
+    }
+
+    /// A text file still gets a real diff from the same diff-tool path, so the
+    /// binary check does not swallow ordinary previews.
+    ///
+    #[test]
+    fn get_file_diff_text_with_diff_tool() -> Result<()> {
+        let mut test_repo = TestRepo::new()?;
+        let diff_format = register_diff_tool(&mut test_repo);
+
+        // Modify rather than add: `diff -r` reports an added file as "Only in
+        // right: ...", so a modification is what puts content in the output.
+        let readme = test_repo.directory.path().join("README");
+        fs::write(&readme, b"hello\n")?;
+        test_repo.commander.jj(["new"]).run_void()?;
+        fs::write(&readme, b"goodbye\n")?;
+
+        let file = File {
+            path: Some("README".to_string()),
+            diff_type: Some(DiffType::Modified),
+            line: "M README".to_string(),
+        };
+
+        let head = test_repo.commander.get_current_head()?;
+        let diff = test_repo
+            .commander
+            .get_file_diff(&head, &file, &diff_format, false)?
+            .expect("a text file has a diff");
+
+        assert_ne!(diff, BINARY_PLACEHOLDER);
+        assert!(diff.contains("goodbye"), "unexpected diff: {diff:?}");
+
+        Ok(())
+    }
+
+    /// A file whose *name* contains the stat marker is not mistaken for binary.
+    #[test]
+    fn get_file_diff_path_containing_binary_marker() -> Result<()> {
+        let mut test_repo = TestRepo::new()?;
+        let diff_format = register_diff_tool(&mut test_repo);
+
+        fs::write(
+            test_repo.directory.path().join("(binary) trap.txt"),
+            b"hello\n",
+        )?;
+        let file = File {
+            path: Some("(binary) trap.txt".to_string()),
+            diff_type: Some(DiffType::Added),
+            line: "A (binary) trap.txt".to_string(),
+        };
+
+        let head = test_repo.commander.get_current_head()?;
+        let diff = test_repo
+            .commander
+            .get_file_diff(&head, &file, &diff_format, false)?
+            .expect("a text file has a diff");
+
+        assert_ne!(diff, BINARY_PLACEHOLDER);
 
         Ok(())
     }
