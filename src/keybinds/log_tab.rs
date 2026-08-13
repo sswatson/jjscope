@@ -33,14 +33,16 @@ pub enum LogTabEvent {
 
     FocusCurrent,
     ToggleHeadMark,
+    /// Mark the selected revision as a *before*-anchor: whatever the next
+    /// command places should land below it. The counterpart to
+    /// [LogTabEvent::ToggleHeadMark], which marks after-anchors.
+    ToggleHeadBeforeMark,
     ToggleDiffFormat,
 
     Refresh,
     CreateNew {
         describe: bool,
     },
-    InsertNew,
-    InsertMove,
     Duplicate,
     Rebase,
     RebaseBranch,
@@ -112,6 +114,7 @@ impl Default for LogTabKeybinds {
             LogTabEvent::ScrollToTop => "ctrl+home",
             LogTabEvent::FocusCurrent => "@",
             LogTabEvent::ToggleHeadMark => "space",
+            LogTabEvent::ToggleHeadBeforeMark => "i",
             // todo: move to DetailsKeybindings
             LogTabEvent::ToggleDiffFormat => "w",
             LogTabEvent::Refresh => "shift+r",
@@ -119,8 +122,6 @@ impl Default for LogTabKeybinds {
             LogTabEvent::Duplicate => "shift+d",
             LogTabEvent::CreateNew { describe: false } => "n",
             LogTabEvent::CreateNew { describe: true } => "shift+n",
-            LogTabEvent::InsertNew => "i",
-            LogTabEvent::InsertMove => "shift+i",
             LogTabEvent::Rebase => "r",
             LogTabEvent::RebaseBranch => "shift+b",
             LogTabEvent::Squash { ignore_immutable: false } => "s",
@@ -207,8 +208,6 @@ impl LogTabKeybinds {
             LogTabEvent::Duplicate => config.duplicate,
             LogTabEvent::CreateNew { describe: false } => config.create_new,
             LogTabEvent::CreateNew { describe: true } => config.create_new_describe,
-            LogTabEvent::InsertNew => config.insert_new,
-            LogTabEvent::InsertMove => config.insert_move,
             LogTabEvent::Squash { ignore_immutable: false } => config.squash,
             LogTabEvent::Squash { ignore_immutable: true } => config.squash_ignore_immutable,
             LogTabEvent::Split => config.split,
@@ -284,10 +283,10 @@ impl LogTabKeybinds {
             LogTabEvent::Duplicate => "duplicate change",
             LogTabEvent::EditChange { ignore_immutable: false } => "edit change",
             LogTabEvent::EditChange { ignore_immutable: true } => "edit change ignoring immutability",
+            LogTabEvent::ToggleHeadMark => "mark as a parent of what n/r places (after-anchor)",
+            LogTabEvent::ToggleHeadBeforeMark => "mark as a child of what n/r places (before-anchor), to splice rather than append",
             LogTabEvent::CreateNew { describe: false } => "new change",
             LogTabEvent::CreateNew { describe: true } => "new with message",
-            LogTabEvent::InsertNew => "insert a new change",
-            LogTabEvent::InsertMove => "insert an existing change",
             LogTabEvent::Abandon => "abandon change",
             LogTabEvent::Absorb => "absorb selected change into its mutable ancestors",
             LogTabEvent::SimplifyParents { include_descendants: false } => "simplify parents of the marked/selected change(s)",

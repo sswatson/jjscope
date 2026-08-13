@@ -163,13 +163,19 @@ pub struct JjConfigTemplates {
 }
 
 impl JjConfig {
+    /// The format the details panel opens in.
+    ///
+    /// Falls back to [DiffFormat::Stat]: the shape of a change — which files it
+    /// touches, and how much of each — is what you want first, and `w` steps to
+    /// the contents when you want them. An explicitly configured format, jj's
+    /// own `ui.diff.format`, or a configured diff tool all still win.
     pub fn diff_format(&self) -> DiffFormat {
         self.jjscope
             .diff_format
             .clone()
             .or_else(|| self.ui.diff.format.clone())
             .or_else(|| self.diff_tool().map(DiffFormat::DiffTool))
-            .unwrap_or(DiffFormat::ColorWords)
+            .unwrap_or(DiffFormat::Stat)
     }
 
     pub fn diff_tool(&self) -> Option<Option<String>> {
@@ -257,23 +263,38 @@ pub enum DiffFormat {
     ColorWords,
     Git,
     DiffTool(Option<String>),
+    /// Just the files touched and their added/removed counts (`jj show --stat`),
+    /// for taking in the shape of a change without reading it.
+    Stat,
     // Unused
     Summary,
-    Stat,
 }
 
 impl DiffFormat {
+    /// Whether the rendered output depends on the width it is rendered at, and
+    /// so has to be re-fetched (and cached separately) per panel width. jj sizes
+    /// `--stat`'s histogram bars to `COLUMNS`, and a diff tool may do anything.
+    pub fn is_width_sensitive(&self) -> bool {
+        matches!(self, DiffFormat::DiffTool(_) | DiffFormat::Stat)
+    }
+
+    /// The next format in the `w` rotation: stat → color words → git → diff
+    /// tool (if one is configured) → stat.
+    ///
+    /// Stat leads, since it is the default: one `w` from the opening view gets
+    /// you the contents.
     pub fn get_next(&self, diff_tool: Option<Option<String>>) -> DiffFormat {
         match self {
+            DiffFormat::Stat => DiffFormat::ColorWords,
             DiffFormat::ColorWords => DiffFormat::Git,
             DiffFormat::Git => {
                 if let Some(diff_tool) = diff_tool {
                     DiffFormat::DiffTool(diff_tool)
                 } else {
-                    DiffFormat::ColorWords
+                    DiffFormat::Stat
                 }
             }
-            _ => DiffFormat::ColorWords,
+            _ => DiffFormat::Stat,
         }
     }
 }

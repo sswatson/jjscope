@@ -24,22 +24,17 @@ pub struct CommitShowKey {
     /// Formatting used to render change
     format: DiffFormat,
     /// Render width.
-    /// Set to 0 for all except format=DiffTool.
-    /// For DiffTool it is set to the inner with of the details panel,
-    /// which is given to the tool via the COLUMNS environment variable.
+    /// Set to 0 for formats whose output does not depend on it.
+    /// For width-sensitive formats it is the inner width of the details panel,
+    /// which is given to jj via the COLUMNS environment variable.
     width: usize,
 }
 
 impl CommitShowKey {
-    /// Create a new key. If DiffFormat is not DiffTool, then width
-    /// will be set to zero.
+    /// Create a new key. For formats that render the same at any width, the
+    /// width is zeroed so one cache entry serves every panel size.
     pub fn new(id: Head, format: DiffFormat, width: usize) -> Self {
-        // Keep with only for the DiffTool format
-        let width = if let DiffFormat::DiffTool(_) = format {
-            width
-        } else {
-            0
-        };
+        let width = if format.is_width_sensitive() { width } else { 0 };
         Self { id, format, width }
     }
 }

@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- The details panel now opens in the new `--stat` format instead of color words, and `w` cycles
+  stat → color words → git → diff tool (if set). The shape of a change is usually what you want
+  first, and `w` is one keypress from the contents. Set `jjscope.diff-format = "color-words"` to
+  get the old default back; an explicitly configured format, `ui.diff.format`, or a configured
+  diff tool all still take precedence, so only users with no diff config see the change
+- Log tab: the separate insert commands (`i`/`I`) are gone. Splicing is no longer its own verb:
+  `i` now marks the selected revision as a *before*-anchor (`⌄`), the counterpart to `Space`'s
+  *after*-anchor (`✓`), and `n`/`r` read both sets. `n` with a before-anchor inserts
+  (`jj new --no-edit -A -B`) instead of creating a leaf; `r` with one inserts
+  (`jj rebase -r -A -B`) instead of rebasing onto a parent set. Appending as a leaf is just the
+  case where no before-anchor is set, which is what jj's own model says it is — and it stays a
+  single keypress, with no before-phase to step past. The `insert-new` and `insert-move` config
+  keys are removed; `i` is fixed, like `Space`
+- Log tab: marking two changes where one is an ancestor of the other no longer force-infers a
+  splice. That reading overrode a valid one — those two changes as the parents of a merge — which
+  is now reachable. Say `i` to get the splice instead
 - Log tab: rebase (`r`) now brings descendants along by default (`jj rebase -s`); pressing
   `r` again during the gesture switches to moving just that change (`jj rebase -r`). The
   two modes were previously the other way round. Moving a change usually means moving the
@@ -57,6 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Log tab: a `jj new` that jj rejects — inserting before an immutable commit, say — now shows
+  the error in a popup instead of exiting the TUI. The error propagated out of `update()`,
+  which tears the whole app down; a refused command should just report itself
 - Browsing a revision with `o` no longer expands Git LFS pointers. `git archive` runs the
   smudge filter by default, so a revision whose tree is a few dozen MB could materialize
   many times that — in one repo a 135-byte pointer became a 1 GB file, making `o` take 3.7s
@@ -66,6 +85,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Details panel: added a `--stat` view — just the files a change touches with their
+  added/removed counts — for taking in the shape of a change without reading it. jj sizes the
+  histogram bars to the terminal width, so unlike the other text formats this one is cached per
+  panel width and re-renders on resize
+- Log tab: `r` then `n` (or `N`) creates a new change beside the selected one, sharing its
+  parents. The rebase gesture already seeds the marks with the change's current parents, and
+  every command reads the same marks, so `n` there builds a sibling rather than moving
+  anything — the operation falls out of the mark model rather than needing a key of its own.
+  The gesture ends cleanly instead of leaving a phase whose marks another command consumed
 - Log tab: mark the revisions matching a revset with a gutter bar (`▌`), leaving the log
   otherwise untouched — same revset, same graph, same node glyphs — so the marks read against
   the surrounding history instead of replacing it. `Ctrl+r` now edits two fields, `Show:` (the

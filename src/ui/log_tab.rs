@@ -97,17 +97,6 @@ enum PickState {
         ignore_immutable: bool,
         interactive: bool,
     },
-    /// After the insert-move key: collecting the `-A` (insert-after) anchors
-    /// for the change being moved.
-    InsertAfter { moving: CommitId },
-    /// Collecting the `-B` (insert-before) anchors: entered directly by the
-    /// insert-new key (whose pre-key pick is the `-A` anchors; `moving` is
-    /// `None` since a brand-new change is created), or as the second phase
-    /// of insert-move.
-    InsertBefore {
-        moving: Option<CommitId>,
-        after: Vec<CommitId>,
-    },
     /// After the diffedit key: collecting the single `--from` base to edit
     /// `target` against. The cursor stays on `target`, so an immediate Enter
     /// leaves the base unset and edits the revision's own diff against all its
@@ -532,7 +521,21 @@ each other in code:
 impl<'a> LogTab<'a> {
     fn handle_new(&mut self, describe: bool) -> Result<ComponentInputResult> {
         let mark_count = self.log_panel.marked_heads.len();
-        let text = if mark_count > 0 {
+        let before_count = self.log_panel.before_marked_heads.len();
+        // A splice is more consequential than appending a leaf — it re-parents
+        // the before-anchors — so it says so explicitly rather than reusing the
+        // plain "new change" wording.
+        let text = if before_count > 0 {
+            let after = if mark_count > 0 {
+                format!("{mark_count} marked parents")
+            } else {
+                format!("the selected change ({})", self.head.change_id.as_str())
+            };
+            Text::from(vec![Line::from(format!(
+                "Are you sure you want to insert a new change after {after} and before {before_count} marked changes?"
+            ))])
+            .fg(Color::default())
+        } else if mark_count > 0 {
             Text::from(vec![Line::from(format!(
                 "Are you sure you want to create a new change with {mark_count} marked parents?"
             ))])
@@ -558,15 +561,48 @@ impl<'a> LogTab<'a> {
         Ok(ComponentInputResult::Handled)
     }
 
-    // Execute new command, after self.popup returned
+    /// Execute new command, after self.popup returned.
+    ///
+    /// jj refuses some of these outright — inserting before an immutable
+    /// commit, say — so failures are surfaced as a popup rather than
+    /// propagated: an `Err` out of `update()` reaches the top level and tears
+    /// the TUI down, which is far too much for a rejected command.
     fn execute_new(&mut self) -> Result<Option<AppAction>> {
+        let before = self.log_panel.extract_and_clear_before_marks();
         let commit_ids = self.log_panel.extract_and_clear_head_marks();
-        if commit_ids.is_empty() {
-            new_commander().run_new([self.head.commit_id.as_str()])?;
+
+        let outcome = if before.is_empty() {
+            // No before-anchors: the plain leaf case, `jj new` onto the marked
+            // parents or the selected change.
+            let created = if commit_ids.is_empty() {
+                new_commander().run_new([self.head.commit_id.as_str()])
+            } else {
+                new_commander().run_new(commit_ids.iter().map(CommitId::as_str))
+            };
+            created.and_then(|()| new_commander().get_current_head())
         } else {
-            new_commander().run_new(commit_ids.iter().map(CommitId::as_str))?;
+            // Before-anchors present: splice between them and the after-anchors
+            // (the selected change, if none are marked). `--no-edit` keeps `@`
+            // put, so the cursor is moved to the inserted change instead.
+            let after = if commit_ids.is_empty() {
+                vec![self.head.commit_id.clone()]
+            } else {
+                commit_ids
+            };
+            new_commander().run_new_insert(&after, &before)
+        };
+
+        match outcome {
+            Err(err) => {
+                // The marks are already consumed, and the graph is untouched;
+                // leave the cursor where it is so the user can retry.
+                return Ok(Some(AppAction::SetPopup(Some(Box::new(
+                    MessagePopup::new("New", format!("{err:#}")),
+                )))));
+            }
+            Ok(head) => self.set_head(head),
         }
-        self.set_head(new_commander().get_current_head()?);
+
         if self.describe_after_new {
             self.describe_after_new = false;
             let textarea = TextArea::default();
@@ -596,14 +632,24 @@ impl<'a> LogTab<'a> {
     /// Pick up change(s) to rebase; the parent set is edited next. For a
     /// single source, its current parents are pre-seeded as marks so that
     /// toggling a mark visibly adds/removes a future parent edge.
+    ///
+    /// A before-anchor set before the key switches the gesture to insert mode
+    /// (`-A`/`-B`). There the parents are not pre-seeded: the after-anchors are
+    /// an absolute set picked during the phase, not an edit of today's parents,
+    /// so seeding them would silently add anchors the user never picked.
     fn start_rebase(&mut self) -> Result<()> {
         let sources = self.take_picked_commits();
+        // Read *after* taking the sources: the pre-key pick consumes the
+        // after-marks, but before-marks are left alone and carry into the phase.
+        let inserting = !self.log_panel.before_marked_heads.is_empty();
 
         let mut original_parents = Vec::new();
-        if let [source] = sources.as_slice() {
+        if let [source] = sources.as_slice()
+            && !inserting
+        {
             original_parents = new_commander().get_commit_parents(source)?;
+            self.log_panel.marked_heads = original_parents.iter().cloned().collect();
         }
-        self.log_panel.marked_heads = original_parents.iter().cloned().collect();
         self.log_panel.marks_are_parents = true;
 
         self.pick_state = PickState::RebaseDestinations {
@@ -726,70 +772,56 @@ impl<'a> LogTab<'a> {
         Ok(ComponentInputResult::Handled)
     }
 
-    /// Pick up the `-A` (insert-after) anchors for a brand-new change; the
-    /// `-B` (insert-before) anchors are picked next.
-    ///
-    /// Exception: for exactly two picks where one is an ancestor of the
-    /// other, the assignment is forced (the reverse would be a cycle), so
-    /// the new change is inserted between them immediately.
-    fn start_insert_new(&mut self) -> Result<ComponentInputResult> {
-        let picked = self.take_picked_commits();
-
-        if let [x, y] = picked.as_slice()
-            && let [descendant] = new_commander().get_heads_among(&picked)?.as_slice()
-        {
-            let ancestor = if descendant == x { y } else { x };
-            return self.execute_insert_new(
-                vec![ancestor.clone()],
-                std::slice::from_ref(descendant).to_vec(),
-            );
-        }
-
-        self.pick_state = PickState::InsertBefore {
-            moving: None,
-            after: picked,
-        };
-        self.update_pick_title();
-        Ok(ComponentInputResult::Handled)
-    }
-
-    /// Insert a brand-new change between the anchors and put the cursor on it.
-    fn execute_insert_new(
+    /// Move `moving` so it sits between the anchors (`jj rebase -r -A -B`),
+    /// following it with the cursor afterwards.
+    fn execute_rebase_insert(
         &mut self,
-        after: Vec<CommitId>,
-        before: Vec<CommitId>,
+        moving: &CommitId,
+        after: &[CommitId],
+        before: &[CommitId],
     ) -> Result<ComponentInputResult> {
-        match new_commander().run_new_insert(&after, &before) {
+        // Resolve before the rebase rewrites the moved change, so the cursor
+        // can follow it afterwards
+        let landed = new_commander()
+            .get_head(moving.as_str())
+            .and_then(|moving_head| {
+                new_commander().run_rebase_insert(moving.as_str(), after, before)?;
+                new_commander().get_head_latest(&moving_head)
+            });
+        match landed {
             Err(err) => Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
                 Some(Box::new(MessagePopup::new("Insert", format!("{err:#}")))),
             ))),
-            Ok(inserted) => {
-                self.set_head(inserted);
-                Ok(ComponentInputResult::HandledAction(AppAction::ChangeHead(
-                    self.head.clone(),
+            Ok(landed) => {
+                self.set_head(landed);
+                Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
+                    vec![
+                        AppAction::ChangeHead(self.head.clone()),
+                        AppAction::SetStatusMessage("Inserted | u: undo".to_owned()),
+                    ],
                 )))
             }
         }
     }
 
-    /// Pick up the change to move; its `-A` and `-B` anchors are picked next.
-    fn start_insert_move(&mut self) -> Result<ComponentInputResult> {
-        let picked = self.take_picked_commits();
-        let [moving] = picked.as_slice() else {
-            return Self::message_popup(
-                "Insert",
-                "Mark exactly one change to move, or none to move the change under the cursor.",
-            );
-        };
-        self.pick_state = PickState::InsertAfter {
-            moving: moving.clone(),
-        };
-        self.update_pick_title();
-        Ok(ComponentInputResult::Handled)
+    /// End the gesture but keep the marks, for a command that takes over the
+    /// phase's pick instead of completing it (see the new-sibling arm in
+    /// [Self::input]). Leaving `pick_state` live would strand the user in a
+    /// phase whose marks another command already consumed.
+    ///
+    /// `marks_are_parents` is cleared so the marks stop rendering as pending
+    /// parent edges (`✚`); they are an ordinary mark set again, which is what
+    /// the command reading them expects.
+    fn end_pick_keeping_marks(&mut self) {
+        self.log_panel.marks_are_parents = false;
+        self.pick_state = PickState::Idle;
+        self.log_panel.title_override = None;
+        self.refresh_log_output();
     }
 
     fn cancel_pick(&mut self) {
         self.log_panel.extract_and_clear_head_marks();
+        self.log_panel.extract_and_clear_before_marks();
         self.log_panel.marks_are_parents = false;
         self.pick_state = PickState::Idle;
         self.log_panel.title_override = None;
@@ -819,9 +851,18 @@ impl<'a> LogTab<'a> {
                 } else {
                     "this change"
                 };
-                Some(format!(
-                    " Rebase [{what_moves}] (r: switch): space toggles parents (✚); enter: apply, or onto cursor if untouched; esc: cancel "
-                ))
+                // Before-anchors change what Enter will do, so the hint says so
+                // rather than leaving the mode switch invisible.
+                let before_count = self.log_panel.before_marked_heads.len();
+                if before_count > 0 {
+                    Some(format!(
+                        " Insert [{what_moves}] (r: switch): before {before_count} marked (⌄); space picks what it goes after (✓); enter: apply, esc: cancel "
+                    ))
+                } else {
+                    Some(format!(
+                        " Rebase [{what_moves}] (r: switch): space toggles parents (✚); i: go before; n: new sibling instead; enter: apply, or onto cursor if untouched; esc: cancel "
+                    ))
+                }
             }
             PickState::BranchRebaseDestinations { .. } => Some(
                 " Branch rebase: pick destination(s) (space: mark several, enter: apply, esc: cancel) "
@@ -837,20 +878,6 @@ impl<'a> LogTab<'a> {
                     " Squash [{what_moves}] (s: switch): pick destination (enter: confirm, esc: cancel) "
                 ))
             }
-            PickState::InsertAfter { .. } => Some(
-                " Move: pick AFTER-anchors (space: mark several, enter: next, esc: cancel) "
-                    .to_owned(),
-            ),
-            PickState::InsertBefore {
-                moving: Some(_), ..
-            } => Some(
-                " Move: pick BEFORE-anchors (space: mark several, enter: confirm, esc: cancel) "
-                    .to_owned(),
-            ),
-            PickState::InsertBefore { moving: None, .. } => Some(
-                " Insert: pick BEFORE-anchors (space: mark several, enter: confirm, esc: cancel) "
-                    .to_owned(),
-            ),
             PickState::DiffEditFrom { .. } => Some(
                 " Diff edit: enter: this revision's own diff, or pick a base to edit against (esc: cancel) "
                     .to_owned(),
@@ -869,6 +896,29 @@ impl<'a> LogTab<'a> {
                 original_parents,
                 include_descendants,
             } => {
+                // Before-anchors switch the gesture wholesale from "-d onto
+                // this parent set" to "-A/-B splice". The parent-edit logic
+                // below, and its no-op-means-onto-the-cursor fallback, do not
+                // apply: in insert mode the after-anchors are an absolute set,
+                // and an empty one is meaningful (insert with only -B).
+                if !self.log_panel.before_marked_heads.is_empty() {
+                    let [moving] = sources.as_slice() else {
+                        return Self::message_popup(
+                            "Rebase",
+                            "Inserting between changes moves a single change. Pick just one, or clear the before-anchors.",
+                        );
+                    };
+                    let moving = moving.clone();
+
+                    let before = self.log_panel.extract_and_clear_before_marks();
+                    let after = self.log_panel.extract_and_clear_head_marks();
+                    self.log_panel.marks_are_parents = false;
+                    self.pick_state = PickState::Idle;
+                    self.log_panel.title_override = None;
+
+                    return self.execute_rebase_insert(&moving, &after, &before);
+                }
+
                 // The marks are the edited parent set. Don't consume them
                 // yet: validation failures keep the phase (and glyphs) alive.
                 let marks = &self.log_panel.marked_heads;
@@ -975,44 +1025,6 @@ impl<'a> LogTab<'a> {
                         AppAction::SetStatusMessage("Squashed | u: undo".to_owned()),
                     ],
                 )))
-            }
-            PickState::InsertAfter { moving } => {
-                let after = self.take_picked_commits();
-                self.pick_state = PickState::InsertBefore {
-                    moving: Some(moving),
-                    after,
-                };
-                self.update_pick_title();
-                Ok(ComponentInputResult::Handled)
-            }
-            PickState::InsertBefore { moving, after } => {
-                let before = self.take_picked_commits();
-                self.pick_state = PickState::Idle;
-                self.log_panel.title_override = None;
-
-                let Some(moving) = &moving else {
-                    return self.execute_insert_new(after, before);
-                };
-
-                // Resolve before the rebase rewrites the moved change, so the
-                // cursor can follow it afterwards
-                let landed = new_commander()
-                    .get_head(moving.as_str())
-                    .and_then(|moving_head| {
-                        new_commander().run_rebase_insert(moving.as_str(), &after, &before)?;
-                        new_commander().get_head_latest(&moving_head)
-                    });
-                match landed {
-                    Err(err) => Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
-                        Some(Box::new(MessagePopup::new("Insert", format!("{err:#}")))),
-                    ))),
-                    Ok(landed) => {
-                        self.set_head(landed);
-                        Ok(ComponentInputResult::HandledAction(AppAction::ChangeHead(
-                            self.head.clone(),
-                        )))
-                    }
-                }
             }
             PickState::DiffEditFrom { target } => {
                 // The base is the marked revision, or the change under the
@@ -1414,7 +1426,8 @@ impl<'a> LogTab<'a> {
             | LogTabEvent::ScrollUpHalf
             | LogTabEvent::ScrollToBottom
             | LogTabEvent::ScrollToTop
-            | LogTabEvent::ToggleHeadMark => {
+            | LogTabEvent::ToggleHeadMark
+            | LogTabEvent::ToggleHeadBeforeMark => {
                 self.log_panel.handle_event(log_tab_event)?;
                 self.sync_head_output();
             }
@@ -1443,12 +1456,6 @@ impl<'a> LogTab<'a> {
 
             LogTabEvent::CreateNew { describe } => {
                 return self.handle_new(describe);
-            }
-            LogTabEvent::InsertNew => {
-                return self.start_insert_new();
-            }
-            LogTabEvent::InsertMove => {
-                return self.start_insert_move();
             }
             LogTabEvent::Rebase => {
                 self.start_rebase()?;
@@ -2210,6 +2217,27 @@ impl Component for LogTab<'_> {
                         // The squash key toggles interactive mode mid-gesture
                         self.toggle_squash_interactive();
                         return Ok(ComponentInputResult::Handled);
+                    }
+                    LogTabEvent::ToggleHeadBeforeMark
+                        if matches!(self.pick_state, PickState::RebaseDestinations { .. }) =>
+                    {
+                        // A before-anchor switches the gesture into insert mode,
+                        // so the title has to be recomputed alongside the mark.
+                        self.log_panel.toggle_head_before_mark();
+                        self.update_pick_title();
+                        self.sync_head_output();
+                        return Ok(ComponentInputResult::Handled);
+                    }
+                    LogTabEvent::CreateNew { describe }
+                        if matches!(self.pick_state, PickState::RebaseDestinations { .. }) =>
+                    {
+                        // New sibling: the phase has already seeded the marks
+                        // with the source's parents, so `n` here creates a
+                        // change beside it rather than moving it. End the
+                        // gesture first — but leave the marks, which are the
+                        // parent set `handle_new` is about to read.
+                        self.end_pick_keeping_marks();
+                        return self.handle_new(describe);
                     }
                     _ => {}
                 }

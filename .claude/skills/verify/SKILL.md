@@ -59,5 +59,6 @@ repo.
 - The status message (top-right header) clears on the *next* keypress, not
   a timer — factor that into capture timing (capture before sending the next
   key).
-- Default keybinds: `Shift+A` absorb, `Shift+I` insert-move, `i` insert-new,
-  `Ctrl+R` rebase popup. See `docs/keybindings.md` for the full list.
+- Default keybinds: `Shift+A` absorb, `Space` mark an after-anchor, `i` mark a
+  before-anchor (splices `n`/`r` instead of appending), `Ctrl+R` rebase popup.
+  See `docs/keybindings.md` for the full list.

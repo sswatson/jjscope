@@ -71,6 +71,15 @@ pub struct LogPanel<'a> {
     /// Currently marked commits
     pub marked_heads: HashSet<CommitId>,
 
+    /// Commits marked as *before*-anchors: the change a command creates or
+    /// moves should land below these, i.e. they become its children
+    /// (`jj new`/`jj rebase -B`). [Self::marked_heads] are the corresponding
+    /// after-anchors, so the two sets together describe a splice.
+    ///
+    /// Kept separate rather than as a flag on one set because a revision can
+    /// legitimately be neither, and because the two render differently.
+    pub before_marked_heads: HashSet<CommitId>,
+
     /// When true, the marked commits are the candidate parent set of a
     /// rebase in progress and render as [NODE_PARENT] instead of
     /// [NODE_MARKED], so toggling a mark visibly adds/removes a future
@@ -114,6 +123,10 @@ const NODE_MARKED: char = '✓';
 /// Node glyph for a marked commit while the marks are a rebase's candidate
 /// parent set (see [LogPanel::marks_are_parents]).
 const NODE_PARENT: char = '✚';
+/// Node glyph for a commit marked as a *before*-anchor (see
+/// [LogPanel::before_marked_heads]). Reads as "what we're placing goes above
+/// this one", the mirror of the after-anchors' [NODE_MARKED].
+const NODE_BEFORE: char = '⌄';
 /// Node glyph shown in place of jj's usual node for a commit `jj absorb` just
 /// moved hunks into.
 const NODE_ABSORBED: char = '★';
@@ -275,6 +288,7 @@ impl<'a> LogPanel<'a> {
 
             head,
             marked_heads: HashSet::new(),
+            before_marked_heads: HashSet::new(),
             marks_are_parents: false,
             absorbed_heads: HashSet::new(),
             rebased_heads: HashSet::new(),
@@ -295,15 +309,25 @@ impl<'a> LogPanel<'a> {
     /// Run jj log and store output for display
     pub fn refresh_log_output(&mut self) {
         let marked_ids: Vec<&str> = self.marked_heads.iter().map(CommitId::as_str).collect();
+        let before_ids: Vec<&str> = self
+            .before_marked_heads
+            .iter()
+            .map(CommitId::as_str)
+            .collect();
         let absorbed_ids: Vec<&str> = self.absorbed_heads.iter().map(ChangeId::as_str).collect();
         let rebased_ids: Vec<&str> = self.rebased_heads.iter().map(ChangeId::as_str).collect();
-        let mark_glyph = if self.marks_are_parents {
+        // `✚` reads as "add a parent edge", which only makes sense while the
+        // marks really are an edit of the parent set. Once a before-anchor puts
+        // the gesture in insert mode they are plain anchors again, so they fall
+        // back to `✓` and match the hint in the panel title.
+        let mark_glyph = if self.marks_are_parents && self.before_marked_heads.is_empty() {
             NODE_PARENT
         } else {
             NODE_MARKED
         };
         let node_overrides = [
             (mark_glyph, marked_ids.as_slice()),
+            (NODE_BEFORE, before_ids.as_slice()),
             (NODE_ABSORBED, absorbed_ids.as_slice()),
             (NODE_REBASED, rebased_ids.as_slice()),
         ];
@@ -486,6 +510,9 @@ impl<'a> LogPanel<'a> {
     /// it needs a fresh fetch to become visible.
     pub fn set_head_mark(&mut self, head: &Head, mark: bool) {
         if mark {
+            // The two anchor sets are exclusive: a revision cannot be both
+            // above and below the change being placed.
+            self.before_marked_heads.remove(&head.commit_id);
             self.marked_heads.insert(head.commit_id.clone());
         } else {
             self.marked_heads.remove(&head.commit_id);
@@ -504,12 +531,35 @@ impl<'a> LogPanel<'a> {
         self.set_head_mark(&self.head.clone(), !was_marked);
     }
 
+    /// LogTabEvent: Toggle the before-anchor mark on the current head.
+    ///
+    /// Mirrors [Self::toggle_head_mark]; marking as a before-anchor clears any
+    /// after-mark on the same revision, since the two are exclusive.
+    pub fn toggle_head_before_mark(&mut self) {
+        let commit_id = self.head.commit_id.clone();
+        if self.before_marked_heads.remove(&commit_id) {
+            self.refresh_log_output();
+            return;
+        }
+        self.marked_heads.remove(&commit_id);
+        self.before_marked_heads.insert(commit_id);
+        self.refresh_log_output();
+    }
+
     /// Extract the list of all marked heads and clear it
     ///
     /// Refreshes immediately, for the same reason [Self::set_head_mark] does:
     /// the mark glyph is baked into the fetched log text.
     pub fn extract_and_clear_head_marks(&mut self) -> Vec<CommitId> {
         let commit_ids = self.marked_heads.drain().collect();
+        self.refresh_log_output();
+        commit_ids
+    }
+
+    /// Extract the before-anchor marks and clear them, like
+    /// [Self::extract_and_clear_head_marks].
+    pub fn extract_and_clear_before_marks(&mut self) -> Vec<CommitId> {
+        let commit_ids = self.before_marked_heads.drain().collect();
         self.refresh_log_output();
         commit_ids
     }
@@ -718,6 +768,10 @@ impl<'a> LogPanel<'a> {
             }
             LogTabEvent::ScrollToTop => {
                 self.scroll_relative(-isize::MAX);
+            }
+            LogTabEvent::ToggleHeadBeforeMark => {
+                self.toggle_head_before_mark();
+                return Ok(ComponentInputResult::Handled);
             }
             LogTabEvent::ToggleHeadMark => {
                 self.toggle_head_mark();

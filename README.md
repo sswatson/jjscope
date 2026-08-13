@@ -11,13 +11,14 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
 - Log
   - Scroll through the jj log and view change details in side panel
   - Create new changes from selected change with `n`
-  - Insert a new change, or move the selected change, between marked changes with `i`/`I`
+  - Mark anchors with `Space` (goes after) and `i` (goes before) to splice with `n`/`r` instead
+    of appending
   - Edit changes with `e`/`E`
   - Describe changes with `d`
   - Abandon changes with `a`
   - Absorb a change's diff into its mutable ancestors with `A`
   - Generate a new change id (resolve divergence) with `c`/`C`
-  - Toggle between color words and git diff with `p`
+  - Toggle the details panel between a `--stat` summary (default), color words, and git diff with `p`
   - Mark the revisions matching a revset with a gutter bar, leaving the graph intact — set it
     alongside the log's own revset with `Ctrl+r`, or mark the revisions touching a path with `T`
   - See different revset with `r`
@@ -31,7 +32,7 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - View files in current change and diff in side panel
   - See a change's files from the log tab with `Enter`
   - View conflicts list in current change
-  - Toggle between color words and git diff with `w`
+  - Toggle the diff between a `--stat` summary (default), color words, and git diff with `w`
   - Browse the whole repo at the shown revision in your editor with `o`
   - Mark the revisions touching the selected file on the log tab with `T`
   - Untrack file with `x`
@@ -66,7 +67,7 @@ To build and install a pre-release version: `cargo install --git https://github.
 You can optionally configure the following options through your jj config:
 
 - `jjscope.highlight-color`: Changes the highlight color. Can use named colors. Defaults to `#323264`
-- `jjscope.diff-format`: Change the default diff format. Can be `color-words` or `git`. Defaults to `color_words`
+- `jjscope.diff-format`: Change the default diff format. Can be `color-words`, `git`, or `stat`. Defaults to `stat`
   - If `jjscope.diff-format` is not set but `ui.diff.format` is, the latter will be used
 - `jjscope.diff-tool`: Specify which diff tool to use by default
   - If `jjscope.diff-tool` is not set but `ui.diff.tool` is, the latter will be used
@@ -217,19 +218,30 @@ See all key mappings for the current tab with `?`.
     that directory and `src/*.rs` honours the glob. Prefix it to change that: `glob:'src/**/*.rs'`,
     `file:src/app.rs` for one exact file, `root:src` to resolve from the workspace root instead
     of the working directory
-- Change details panel diff format between color words (default) and Git (and diff tool if set) with `w`
+- Change details panel diff format with `w`, cycling `--stat` (the default: just the files
+  touched, with added/removed counts) → color words → Git → a diff tool if one is set
 - Toggle details panel wrapping with `W`
 - Create new change after highlighted change with `n` (`jj new`)
   - Create new change and describe with `N` (`jj new -m`)
-- Insert a new change between other changes with `i` (`jj new --no-edit -A -B`; `@` stays where it is)
-  - Marking two changes where one is an ancestor of the other inserts between them immediately —
-    the assignment is inferred, since the reverse would be a cycle
-  - Otherwise the marked changes (or the highlighted one) become the after-anchors; after pressing
-    `i`, pick the before-anchors (`Space` to mark several, or just point at one) and press `Enter`
-  - Press `Esc` to cancel
-- Move the highlighted (or marked) change between other changes with `I` (`jj rebase -r -A -B`)
-  - After pressing `I`, pick the after-anchors, press `Enter`, pick the before-anchors, and
-    press `Enter` again
+- Splice rather than append by marking a *before*-anchor with `i` (`⌄` in the graph): the change
+  `n` creates or `r` moves lands *below* it, i.e. the anchor becomes its child. `Space` marks
+  *after*-anchors (`✓`), which become its parents. The two marks are exclusive on a revision
+  - With no before-anchor, `n` and `r` behave exactly as they always have — a before-anchor is an
+    extra key you press only when you want a splice, never a phase you have to step through
+  - `n` with a before-anchor runs `jj new --no-edit -A -B`, so `@` stays where it is and the cursor
+    is placed on the inserted change (press `e` there to edit into it). The confirmation says it is
+    inserting rather than creating a leaf
+  - `r` with a before-anchor runs `jj rebase -r -A -B` instead of rebasing onto a parent set. Set
+    the before-anchor first, then press `r` on the change to move, then `Space` to pick what it
+    goes after. The panel title switches to `Insert` so the change of mode is visible, and `i`
+    toggles it back mid-gesture
+  - In insert mode the current parents are *not* pre-seeded as marks: the after-anchors are an
+    absolute set you pick, not an edit of today's parents
+  - `Esc` clears both kinds of mark
+- Create a new change *beside* the selected one, sharing its parents, by pressing `r` then `n`
+  (or `N` to describe it). The rebase gesture seeds the marks with the change's current parents,
+  so `n` there builds a sibling instead of moving anything; the gesture ends and the usual `n`
+  confirmation shows how many parents it picked up
 - Edit highlighted change with `e` (`jj edit`)
   - Edit highlighted change ignoring immutability with `E` (`jj edit --ignore-immutable`)
 - Abandon a change with `a` (`jj abandon`)
@@ -326,7 +338,8 @@ See all key mappings for the current tab with `?`.
   - `v` keeps the rebased/squashed revision's version; `V` keeps the rebase/squash destination's version
   - `m` resolves in the configured merge editor (`jj resolve`), file by file on the log tab
     or just the selected file on the files tab
-- Change details panel diff format between color words (default) and Git (and diff tool if set) with `w`
+- Change details panel diff format with `w`, cycling `--stat` (the default: just the files
+  touched, with added/removed counts) → color words → Git → a diff tool if one is set
 - Toggle details panel wrapping with `W`
 
 ### Bookmarks tab
@@ -344,7 +357,8 @@ See all key mappings for the current tab with `?`.
 - Forget a bookmark with `f` (`jj bookmark forget`)
 - Track a bookmark with `t` (only works for bookmarks with remotes) (`jj bookmark track`)
 - Untrack a bookmark with `T` (only works for bookmarks with remotes) (`jj bookmark untrack`)
-- Change details panel diff format between color words (default) and Git (and diff tool if set) with `w`
+- Change details panel diff format with `w`, cycling `--stat` (the default: just the files
+  touched, with added/removed counts) → color words → Git → a diff tool if one is set
 - Toggle details panel wrapping with `W`
 - Create a new change after the highlighted bookmark's change with `n` (`jj new`)
   - Create a new change and describe with `N` (`jj new -m`)
