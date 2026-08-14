@@ -2,6 +2,7 @@
 // how tui_confirm_dialog's API is meant to be used. Same as in log_tab.
 #![expect(clippy::borrow_interior_mutable_const)]
 
+use std::collections::BTreeSet;
 use std::vec;
 
 use ansi_to_tui::IntoText;
@@ -40,6 +41,10 @@ use crate::ui::utils::tabs_to_spaces;
 
 const UNTRACK_POPUP_ID: u16 = 1;
 
+/// Glyph in the leading column of a file marked for the log tab's file filter.
+/// Matches the log tab's own mark glyph, since it means the same thing.
+const FILE_MARK: &str = "✓";
+
 /// Files tab. Shows files in selected change in main panel and selected file diff in details panel
 pub struct FilesTab {
     head: Head,
@@ -54,6 +59,14 @@ pub struct FilesTab {
     untracked_output: Vec<UntrackedFile>,
     files_list_state: ListState,
     files_height: u16,
+
+    /// Files marked with `Space`, by their post-rename path.
+    ///
+    /// Only used to build the log tab's file highlight (`T`), so marks are kept
+    /// across a `set_head` rather than cleared: comparing one revision's files
+    /// against another's is the point, and re-marking on every navigation would
+    /// defeat it. Paths that no longer appear simply do not render a marker.
+    marked_paths: BTreeSet<String>,
 
     pub file: Option<File>,
     diff_panel: DetailsPanel,
@@ -131,6 +144,7 @@ impl FilesTab {
             file: current_file,
             files_list_state,
             files_height: 0,
+            marked_paths: BTreeSet::new(),
 
             conflicts_output,
             untracked_output: Vec::new(),
@@ -326,6 +340,71 @@ impl FilesTab {
         }
     }
 
+    /// Every filterable path in this revision, in list order.
+    ///
+    /// Renames resolve to their new name, matching what [Self::marked_paths]
+    /// stores and what the log tab filters on. Lines with no path — blank
+    /// separators, appended conflict rows — are skipped.
+    fn listed_paths(&self) -> Vec<String> {
+        self.files_output
+            .as_ref()
+            .map(|files| {
+                files
+                    .iter()
+                    .filter_map(Commander::destination_path)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Toggle the mark on the selected file.
+    fn toggle_file_mark(&mut self) {
+        let Some(path) = self.file.as_ref().and_then(Commander::destination_path) else {
+            return;
+        };
+        if !self.marked_paths.remove(path) {
+            self.marked_paths.insert(path.to_owned());
+        }
+    }
+
+    /// Mark every file in the revision, or clear them all if all are already
+    /// marked.
+    ///
+    /// "All marked" is judged against this revision's files only, so marks
+    /// carried over from another revision neither block the mark-all nor
+    /// survive the clear — pressing this twice always ends with a clean set.
+    fn toggle_all_file_marks(&mut self) {
+        let listed = self.listed_paths();
+        if listed.is_empty() {
+            return;
+        }
+        let all_marked = listed.iter().all(|path| self.marked_paths.contains(path));
+        if all_marked {
+            for path in listed {
+                self.marked_paths.remove(&path);
+            }
+        } else {
+            self.marked_paths.extend(listed);
+        }
+    }
+
+    /// The paths to hand to the log tab's file highlight: the marked files, or
+    /// the selected one when nothing is marked.
+    ///
+    /// Falling back to the selection keeps `T` doing what it always did for a
+    /// user who has not marked anything.
+    fn paths_to_filter(&self) -> Vec<String> {
+        if !self.marked_paths.is_empty() {
+            return self.marked_paths.iter().cloned().collect();
+        }
+        self.file
+            .as_ref()
+            .and_then(Commander::destination_path)
+            .map(|path| vec![path.to_owned()])
+            .unwrap_or_default()
+    }
+
     /// Browse the whole repo as it existed at the revision being shown, by
     /// extracting its file tree to a temp directory and opening that in the
     /// user's editor. Complements [Self::open_file], which opens the single
@@ -504,6 +583,20 @@ impl Component for FilesTab {
                                             .collect();
                                     }
 
+                                    // Replace the leading pad with the mark glyph
+                                    // for a marked file. Done after the recolor
+                                    // above, which would otherwise repaint it in
+                                    // the diff type's colour.
+                                    if Commander::destination_path(file)
+                                        .is_some_and(|path| self.marked_paths.contains(path))
+                                        && let Some(pad) = line.spans.first_mut()
+                                    {
+                                        *pad = Span::styled(
+                                            FILE_MARK,
+                                            Style::new().fg(Color::Cyan).bold(),
+                                        );
+                                    }
+
                                     if current_file_index == Some(i) {
                                         line = line.bg(self.config.highlight_color());
 
@@ -554,10 +647,24 @@ impl Component for FilesTab {
                 1 => " (1 untracked)".to_owned(),
                 n => format!(" ({n} untracked)"),
             };
+            // Marks persist across revisions, so say how many are set — the
+            // glyphs alone would not account for marks on files this revision
+            // does not touch.
+            let marked_note = match self.marked_paths.len() {
+                0 => String::new(),
+                1 => " — 1 marked, T: mark revisions touching it".to_owned(),
+                n => format!(" — {n} marked, T: mark revisions touching them"),
+            };
             let files = List::new(lines)
                 .block(
                     Block::bordered()
-                        .title(" Files for ".to_owned() + &title_change + &untracked_note + " ")
+                        .title(
+                            " Files for ".to_owned()
+                                + &title_change
+                                + &untracked_note
+                                + &marked_note
+                                + " ",
+                        )
                         .border_type(BorderType::Rounded),
                 )
                 .scroll_padding(3);
@@ -657,16 +764,23 @@ impl Component for FilesTab {
                 KeyCode::Char('o') => {
                     return Ok(ComponentInputResult::HandledAction(self.open_tree()));
                 }
+                KeyCode::Char(' ') => {
+                    self.toggle_file_mark();
+                }
+                KeyCode::Char('a') => {
+                    self.toggle_all_file_marks();
+                }
                 KeyCode::Char('T') => {
+                    // The marked files, or the selected one if none are marked.
                     // `destination_path` resolves a rename to its new name; a file
                     // with no parsed path (a blank line, or an appended conflict
                     // row) has nothing to filter on.
-                    let Some(path) = self.file.as_ref().and_then(Commander::destination_path)
-                    else {
+                    let paths = self.paths_to_filter();
+                    if paths.is_empty() {
                         return Ok(ComponentInputResult::Handled);
-                    };
+                    }
                     return Ok(ComponentInputResult::HandledAction(
-                        AppAction::FilterLogByPath(path.to_owned()),
+                        AppAction::FilterLogByPaths(paths),
                     ));
                 }
                 KeyCode::Char('r') => {
@@ -721,8 +835,16 @@ impl Component for FilesTab {
                                         .to_owned(),
                                 ),
                                 (
+                                    "Space".to_owned(),
+                                    "mark/unmark this file for the T filter".to_owned(),
+                                ),
+                                (
+                                    "a".to_owned(),
+                                    "mark every file, or clear them if all are marked".to_owned(),
+                                ),
+                                (
                                     "T".to_owned(),
-                                    "mark the revisions touching this file on the log tab"
+                                    "mark the revisions touching the marked files (or this one) on the log tab"
                                         .to_owned(),
                                 ),
                                 (

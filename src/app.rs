@@ -206,11 +206,11 @@ impl<'a> App<'a> {
             AppAction::ChangeHead(head) => {
                 self.get_files_tab()?.set_head(&head)?;
             }
-            AppAction::FilterLogByPath(path) => {
+            AppAction::FilterLogByPaths(paths) => {
                 // Apply the filter before switching tabs: set_tab calls focus(),
                 // whose refresh re-runs the highlight query, so the gutter is
                 // populated by the time the log is drawn.
-                let result = self.get_log_tab()?.apply_exact_file_filter(&path);
+                let result = self.get_log_tab()?.apply_exact_file_filter(&paths);
                 self.set_tab(Tab::Log)?;
                 if let ComponentInputResult::HandledAction(action) = result {
                     self.handle_action(action)?;

@@ -79,6 +79,10 @@ pub enum LogTabEvent {
     /// Mark the revisions touching a path: a convenience layer over the highlight
     /// revset, which writes the `files(...)` expression from a path.
     FileFilter,
+    /// Mark every revision touching any file that the marked (or selected)
+    /// revisions touch — the same highlight, with the fileset taken from
+    /// revisions instead of typed.
+    RelatedFileFilter,
     SetBookmark,
     SetTag,
     OpenFiles,
@@ -145,6 +149,7 @@ impl Default for LogTabKeybinds {
             LogTabEvent::EditRevset => "ctrl+r",
             LogTabEvent::Search => "/",
             LogTabEvent::FileFilter => "shift+t",
+            LogTabEvent::RelatedFileFilter => "ctrl+t",
             LogTabEvent::SetBookmark => "b",
             LogTabEvent::SetTag => "t",
             LogTabEvent::OpenFiles => "enter",
@@ -229,6 +234,7 @@ impl LogTabKeybinds {
             LogTabEvent::EditRevset => config.edit_revset,
             LogTabEvent::Search => config.search,
             LogTabEvent::FileFilter => config.file_filter,
+            LogTabEvent::RelatedFileFilter => config.related_file_filter,
             LogTabEvent::SetBookmark => config.set_bookmark,
             LogTabEvent::SetTag => config.set_tag,
             LogTabEvent::OpenFiles => config.open_files,
@@ -279,6 +285,7 @@ impl LogTabKeybinds {
             LogTabEvent::EditRevset => "set the log's revset, and the revset to mark within it",
             LogTabEvent::Search => "search the log text (n/N: next/previous match)",
             LogTabEvent::FileFilter => "mark the revisions touching a path (again to clear)",
+            LogTabEvent::RelatedFileFilter => "mark the revisions touching any file the marked/selected revisions touch (again to clear)",
             LogTabEvent::Describe => "describe change",
             LogTabEvent::Duplicate => "duplicate change",
             LogTabEvent::EditChange { ignore_immutable: false } => "edit change",

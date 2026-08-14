@@ -4,6 +4,7 @@
 This module has features to parse the diff output.
 It is mostly used in the [files_tab][crate::ui::files_tab] module.
 */
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
@@ -181,6 +182,64 @@ impl Commander {
                 }
             })
             .collect())
+    }
+
+    /// The union of the files touched by each of `commit_ids`.
+    ///
+    /// Queried one revision at a time and unioned here rather than with a
+    /// single `jj diff -r 'a|b|...'`: that asks for the *combined* diff, in
+    /// which a change and its revert cancel out, so a file both revisions
+    /// touched would be missing from the result entirely.
+    ///
+    /// A rename contributes both of its paths, since either name is a way the
+    /// file was touched.
+    #[instrument(level = "trace", skip(self, commit_ids))]
+    pub fn get_touched_paths(&self, commit_ids: &[CommitId]) -> Result<BTreeSet<String>> {
+        let mut paths = BTreeSet::new();
+        for commit_id in commit_ids {
+            let summary = self
+                .jj(["diff", "-r", commit_id.as_str(), "--summary"])
+                .run()
+                .context("Failed listing the files a revision touches")?;
+            for line in summary.lines() {
+                let Some(captures) = FILES_REGEX.captures(line) else {
+                    continue;
+                };
+                let Some(path) = captures.get(2).map(|m| m.as_str()) else {
+                    continue;
+                };
+                // `{old => new}` renames: record both names.
+                if let Some(rename) = RENAME_REGEX.captures(path) {
+                    let (Some(from), Some(to)) = (rename.get(1), rename.get(2)) else {
+                        continue;
+                    };
+                    let prefix = &path[..rename.get(0).expect("whole match").start()];
+                    let suffix = &path[rename.get(0).expect("whole match").end()..];
+                    paths.insert(format!("{prefix}{}{suffix}", from.as_str()));
+                    paths.insert(format!("{prefix}{}{suffix}", to.as_str()));
+                } else {
+                    paths.insert(path.to_owned());
+                }
+            }
+        }
+        Ok(paths)
+    }
+
+    /// The revset selecting every revision that touches any of `paths`.
+    ///
+    /// Each path is matched exactly (`file:`), not as a prefix: these paths come
+    /// from jj's own diff summaries, so prefix matching would additionally mark
+    /// revisions touching unrelated files that merely share a prefix.
+    pub(crate) fn any_of_files_revset(paths: &BTreeSet<String>) -> Option<String> {
+        if paths.is_empty() {
+            return None;
+        }
+        let terms = paths
+            .iter()
+            .map(|path| Self::quote_fileset(&format!("file:{path}")))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        Some(format!("files({terms})"))
     }
 
     /// Files present in the working copy that jj did not snapshot, with the
@@ -513,17 +572,6 @@ impl Commander {
             "file:\"{}\"",
             path.replace("\\", "\\\\").replace('"', "\\\"")
         )
-    }
-
-    /// The revset selecting every revision that modifies exactly `path`.
-    ///
-    /// Used by the files tab's "mark the revisions touching this file" handoff,
-    /// where the path came from jj's diff summary rather than from the user, so
-    /// matching it exactly is unambiguous. Typed input goes through
-    /// [Self::files_revset] instead, whose default `prefix-glob:` kind lets a
-    /// directory or a glob work.
-    pub(crate) fn exact_file_fileset_revset(path: &str) -> String {
-        format!("files({})", Self::get_file_revset(path))
     }
 
     /// Quote a user-typed fileset for interpolation into a revset expression.
@@ -1822,12 +1870,39 @@ mod files_revset_tests {
     }
 
     #[test]
-    fn exact_file_fileset_revset_is_an_exact_match() {
-        // The files-tab handoff names a concrete file, so it matches exactly
+    fn any_of_files_revset_is_an_exact_match() {
+        // The files-tab handoff names concrete files, so each matches exactly
         // rather than as a directory prefix.
+        let paths = BTreeSet::from(["src/app.rs".to_owned()]);
         assert_eq!(
-            Commander::exact_file_fileset_revset("src/app.rs"),
-            r#"files(file:"src/app.rs")"#
+            Commander::any_of_files_revset(&paths).as_deref(),
+            Some(r#"files(file:"src/app.rs")"#)
+        );
+    }
+
+    #[test]
+    fn any_of_files_revset_unions_several_paths() {
+        // The `file:` prefix must stay *outside* the quotes: jj reads
+        // `"file:a"` as a literal path with a colon in its name, which matches
+        // nothing.
+        let paths = BTreeSet::from(["a.txt".to_owned(), "dir/b.txt".to_owned()]);
+        assert_eq!(
+            Commander::any_of_files_revset(&paths).as_deref(),
+            Some(r#"files(file:"a.txt" | file:"dir/b.txt")"#)
+        );
+    }
+
+    #[test]
+    fn any_of_files_revset_is_none_for_no_paths() {
+        assert_eq!(Commander::any_of_files_revset(&BTreeSet::new()), None);
+    }
+
+    #[test]
+    fn any_of_files_revset_escapes_quotes() {
+        let paths = BTreeSet::from([r#"a"b.txt"#.to_owned()]);
+        assert_eq!(
+            Commander::any_of_files_revset(&paths).as_deref(),
+            Some(r#"files(file:"a\"b.txt")"#)
         );
     }
 

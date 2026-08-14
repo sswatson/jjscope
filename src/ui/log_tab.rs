@@ -1,6 +1,7 @@
 #![expect(clippy::borrow_interior_mutable_const)]
 
 use std::cmp::max;
+use std::collections::BTreeSet;
 
 use anyhow::Result;
 use ratatui::crossterm::clipboard::CopyToClipboard;
@@ -1271,13 +1272,65 @@ impl<'a> LogTab<'a> {
         self.apply_path_highlight(path, Commander::files_revset)
     }
 
-    /// Highlight the revisions touching exactly `path`.
+    /// Highlight the revisions touching any of exactly these `paths`.
     ///
-    /// Used by the files tab's handoff: the path came from jj's own diff summary,
-    /// so matching it exactly is unambiguous, where prefix matching would also
-    /// mark revisions touching unrelated files that merely share the prefix.
-    pub fn apply_exact_file_filter(&mut self, path: &str) -> ComponentInputResult {
-        self.apply_path_highlight(path, Commander::exact_file_fileset_revset)
+    /// Used by the files tab's handoff: the paths came from jj's own diff
+    /// summary, so matching them exactly is unambiguous, where prefix matching
+    /// would also mark revisions touching unrelated files that merely share a
+    /// prefix.
+    pub fn apply_exact_file_filter(&mut self, paths: &[String]) -> ComponentInputResult {
+        let paths: BTreeSet<String> = paths.iter().cloned().collect();
+        let Some(revset) = Commander::any_of_files_revset(&paths) else {
+            self.clear_highlight();
+            return ComponentInputResult::Handled;
+        };
+
+        // Label with the path when there is one, since that is what the user
+        // pointed at; a set is summarized by count, the revset being unreadable
+        // past a couple of terms.
+        let label = match paths.len() {
+            1 => paths.iter().next().expect("one path").clone(),
+            n => format!("{n} files"),
+        };
+
+        let outcome = self.log_panel.set_highlight(&revset, Some(label));
+        self.report_highlight_outcome(outcome)
+    }
+
+    /// Mark every revision that touches any file the marked revisions touch —
+    /// or the selected revision's files, if none are marked.
+    ///
+    /// The source revisions match themselves, since their own files are in the
+    /// set; that is wanted, as it shows the group being compared against.
+    fn apply_related_file_highlight(&mut self) -> Result<ComponentInputResult> {
+        // Peek at the marks rather than consuming them: this highlights, it does
+        // not act on the revisions, and clearing them would make the repeated
+        // "mark some, look, mark more" loop tedious.
+        let mut sources: Vec<CommitId> = self.log_panel.marked_heads.iter().cloned().collect();
+        if sources.is_empty() {
+            sources.push(self.head.commit_id.clone());
+        }
+        sources.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        let paths = new_commander().get_touched_paths(&sources)?;
+        let Some(revset) = Commander::any_of_files_revset(&paths) else {
+            return Self::message_popup(
+                "Related revisions",
+                "The revision touches no files, so there is nothing to match against.",
+            );
+        };
+
+        // Label with a summary rather than the generated expression: one file
+        // per term, the revset is unreadable past a couple of paths.
+        let label = match (sources.len(), paths.len()) {
+            (1, 1) => "files of 1 revision (1 file)".to_owned(),
+            (1, files) => format!("files of 1 revision ({files} files)"),
+            (revs, 1) => format!("files of {revs} revisions (1 file)"),
+            (revs, files) => format!("files of {revs} revisions ({files} files)"),
+        };
+
+        let outcome = self.log_panel.set_highlight(&revset, Some(label));
+        Ok(self.report_highlight_outcome(outcome))
     }
 
     /// Shared body of the two file-filter entry points: build a revset from the
@@ -1808,6 +1861,14 @@ impl<'a> LogTab<'a> {
                 self.file_filter_textarea = Some(TextArea::default());
                 return Ok(ComponentInputResult::Handled);
             }
+            LogTabEvent::RelatedFileFilter => {
+                // Toggles, like the path file filter.
+                if self.log_panel.has_active_highlight() {
+                    self.clear_highlight();
+                    return Ok(ComponentInputResult::Handled);
+                }
+                return self.apply_related_file_highlight();
+            }
             LogTabEvent::Search => {
                 // Start a fresh query. Highlighting updates live as the user
                 // types; the selection only jumps on Enter.
@@ -2121,6 +2182,7 @@ impl Component for LogTab<'_> {
     }
 
     fn input(&mut self, event: Event) -> Result<ComponentInputResult> {
+
         if let Some(describe_textarea) = self.describe_textarea.as_mut() {
             if let Event::Key(key) = event {
                 match self.keybinds.match_event(key) {

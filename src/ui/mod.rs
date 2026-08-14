@@ -23,12 +23,13 @@ pub enum AppAction {
     ViewFiles(Head),
     ViewLog(Head),
     ChangeHead(Head),
-    /// Apply `path` as the log tab's file filter and switch to the log tab, so
-    /// the log marks every revision touching the file selected on the files tab.
+    /// Apply `paths` as the log tab's file filter and switch to the log tab, so
+    /// the log marks every revision touching any of the files marked (or
+    /// selected) on the files tab.
     ///
-    /// Carries a path rather than a [Head] or a fileset: the files tab knows the
-    /// exact file, so it is matched exactly.
-    FilterLogByPath(String),
+    /// Carries paths rather than a [Head] or a fileset: the files tab knows the
+    /// exact files, so each is matched exactly.
+    FilterLogByPaths(Vec<String>),
     SetPopup(Option<Box<dyn Component>>),
     SetStatusMessage(String),
     Multiple(Vec<AppAction>),

@@ -72,6 +72,7 @@ pub struct LogTabKeybindsConfig {
     pub edit_revset: Option<Keybind>,
     pub search: Option<Keybind>,
     pub file_filter: Option<Keybind>,
+    pub related_file_filter: Option<Keybind>,
     pub set_bookmark: Option<Keybind>,
     pub set_tag: Option<Keybind>,
     pub open_files: Option<Keybind>,
