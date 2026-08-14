@@ -11,7 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-
+- Log tab: `N` now creates a change without moving `@` into it (`jj new --no-edit`) instead of
+  creating one and opening a description editor. New-and-describe was two easy keys already
+  (`n` then `d`), where "make a place to work without leaving the one I'm in" had no binding at
+  all. The cursor moves to the new change, so `e` enters it if you want it after all. The
+  `create-new-describe` config key is renamed `create-new-no-edit`
 - Whole-revision details panels (log, bookmarks, tags) now open in the new `--stat` format
   instead of color words, and `w` cycles stat → color words → git → diff tool (if set). The
   shape of a change is usually what you want first, and `w` is one keypress from the contents.

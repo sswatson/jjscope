@@ -58,7 +58,7 @@ toggle-diff-format = "w"
 
 refresh = ["shift+r", "f5"]
 create-new = "n"
-create-new-describe = "shift+n"
+create-new-no-edit = "shift+n"
 duplicate = "shift+d"
 rebase = "r"
 rebase-branch = "shift+b"

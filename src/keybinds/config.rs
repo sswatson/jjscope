@@ -50,7 +50,7 @@ pub struct LogTabKeybindsConfig {
     pub refresh: Option<Keybind>,
     pub duplicate: Option<Keybind>,
     pub create_new: Option<Keybind>,
-    pub create_new_describe: Option<Keybind>,
+    pub create_new_no_edit: Option<Keybind>,
     pub squash: Option<Keybind>,
     pub squash_ignore_immutable: Option<Keybind>,
     pub split: Option<Keybind>,

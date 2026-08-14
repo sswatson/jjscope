@@ -309,9 +309,9 @@ pub struct LogTab<'a> {
     tag_set_popup_tx: std::sync::mpsc::Sender<bool>,
     tag_set_popup_rx: std::sync::mpsc::Receiver<bool>,
 
-    /// Whether the change `n` is about to create should be described straight
-    /// away (`N`), by handing the terminal to the user's editor once it exists.
-    describe_after_new: bool,
+    /// Whether the change `n` is about to create should be left alone rather
+    /// than moved into (`N`), i.e. `jj new --no-edit`.
+    no_edit_new: bool,
 
     metaedit_update_change_id_ignore_immutable: bool,
 
@@ -406,7 +406,7 @@ impl<'a> LogTab<'a> {
             tag_set_popup_tx,
             tag_set_popup_rx,
 
-            describe_after_new: false,
+            no_edit_new: false,
 
             metaedit_update_change_id_ignore_immutable: false,
 
@@ -631,7 +631,7 @@ each other in code:
 * `execute_<action>` - Perform some action after the dialog closed.
 */
 impl<'a> LogTab<'a> {
-    fn handle_new(&mut self, describe: bool) -> Result<ComponentInputResult> {
+    fn handle_new(&mut self, no_edit: bool) -> Result<ComponentInputResult> {
         let mark_count = self.log_panel.marked_heads.len();
         let before_count = self.log_panel.before_marked_heads.len();
         // A splice is more consequential than appending a leaf — it re-parents
@@ -659,6 +659,16 @@ impl<'a> LogTab<'a> {
             ])
             .fg(Color::default())
         };
+        // `N` leaves `@` where it is, which is the whole difference from `n` —
+        // say so, since the graph afterwards looks the same either way apart
+        // from where `@` sits.
+        let text = if no_edit {
+            let mut lines = text.lines;
+            lines.push(Line::from("@ stays where it is.").fg(Color::DarkGray));
+            Text::from(lines)
+        } else {
+            text
+        };
         self.popup = ConfirmDialogState::new(
             NEW_POPUP_ID,
             Span::styled(" New ", Style::new().bold().cyan()),
@@ -669,7 +679,7 @@ impl<'a> LogTab<'a> {
             .with_no_button(ButtonLabel::NO.clone())
             .with_listener(Some(self.popup_tx.clone()))
             .open();
-        self.describe_after_new = describe;
+        self.no_edit_new = no_edit;
         Ok(ComponentInputResult::Handled)
     }
 
@@ -683,24 +693,26 @@ impl<'a> LogTab<'a> {
         let before = self.log_panel.extract_and_clear_before_marks();
         let commit_ids = self.log_panel.extract_and_clear_head_marks();
 
-        let outcome = if before.is_empty() {
-            // No before-anchors: the plain leaf case, `jj new` onto the marked
-            // parents or the selected change.
-            let created = if commit_ids.is_empty() {
-                new_commander().run_new([self.head.commit_id.as_str()])
-            } else {
-                new_commander().run_new(commit_ids.iter().map(CommitId::as_str))
-            };
-            created.and_then(|()| new_commander().get_current_head())
+        let no_edit = self.no_edit_new;
+        self.no_edit_new = false;
+
+        // The after-anchors: the marked parents, or the selected change.
+        let after = if commit_ids.is_empty() {
+            vec![self.head.commit_id.clone()]
         } else {
-            // Before-anchors present: splice between them and the after-anchors
-            // (the selected change, if none are marked). `--no-edit` keeps `@`
-            // put, so the cursor is moved to the inserted change instead.
-            let after = if commit_ids.is_empty() {
-                vec![self.head.commit_id.clone()]
-            } else {
-                commit_ids
-            };
+            commit_ids
+        };
+
+        let outcome = if before.is_empty() && !no_edit {
+            // The plain leaf case: `jj new` onto the parents, moving `@` into
+            // the change, since starting work there is the point of `n`.
+            new_commander()
+                .run_new(after.iter().map(CommitId::as_str))
+                .and_then(|()| new_commander().get_current_head())
+        } else {
+            // Either a splice (before-anchors) or `N` (leave `@` alone). Both
+            // are `jj new --no-edit`, which reports the change it created so
+            // the cursor can be put on it without `@` moving.
             new_commander().run_new_insert(&after, &before)
         };
 
@@ -715,18 +727,6 @@ impl<'a> LogTab<'a> {
             Ok(head) => self.set_head(head),
         }
 
-        if self.describe_after_new {
-            self.describe_after_new = false;
-            // Change the head first, so the files tab follows the new change,
-            // then hand the terminal to the editor.
-            return Ok(Some(AppAction::Multiple(vec![
-                AppAction::ChangeHead(self.head.clone()),
-                AppAction::RunInteractive(Commander::describe_interactive_command(
-                    self.head.commit_id.as_str(),
-                    false,
-                )),
-            ])));
-        }
         Ok(Some(AppAction::ChangeHead(self.head.clone())))
     }
 
@@ -1626,8 +1626,8 @@ impl<'a> LogTab<'a> {
                 self.refresh_log_output();
             }
 
-            LogTabEvent::CreateNew { describe } => {
-                return self.handle_new(describe);
+            LogTabEvent::CreateNew { no_edit } => {
+                return self.handle_new(no_edit);
             }
             LogTabEvent::Rebase => {
                 self.start_rebase()?;
@@ -2280,11 +2280,11 @@ impl Component for LogTab<'_> {
             // normally.
             if self.log_panel.has_active_search() && matches!(self.pick_state, PickState::Idle) {
                 match self.keybinds.match_event(key) {
-                    LogTabEvent::CreateNew { describe: false } => {
+                    LogTabEvent::CreateNew { no_edit: false } => {
                         self.navigate_search(true);
                         return Ok(ComponentInputResult::Handled);
                     }
-                    LogTabEvent::CreateNew { describe: true } => {
+                    LogTabEvent::CreateNew { no_edit: true } => {
                         self.navigate_search(false);
                         return Ok(ComponentInputResult::Handled);
                     }
@@ -2343,7 +2343,7 @@ impl Component for LogTab<'_> {
                         self.sync_head_output();
                         return Ok(ComponentInputResult::Handled);
                     }
-                    LogTabEvent::CreateNew { describe }
+                    LogTabEvent::CreateNew { no_edit }
                         if matches!(self.pick_state, PickState::RebaseDestinations { .. }) =>
                     {
                         // New sibling: the phase has already seeded the marks
@@ -2352,7 +2352,7 @@ impl Component for LogTab<'_> {
                         // gesture first — but leave the marks, which are the
                         // parent set `handle_new` is about to read.
                         self.end_pick_keeping_marks();
-                        return self.handle_new(describe);
+                        return self.handle_new(no_edit);
                     }
                     _ => {}
                 }

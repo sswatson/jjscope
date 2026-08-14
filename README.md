@@ -10,7 +10,7 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
 
 - Log
   - Scroll through the jj log and view change details in side panel
-  - Create new changes from selected change with `n`
+  - Create new changes from selected change with `n`, or with `N` to leave `@` where it is
   - Mark anchors with `Space` (goes after) and `i` (goes before) to splice with `n`/`r` instead
     of appending
   - Edit changes with `e`/`E`
@@ -233,7 +233,9 @@ See all key mappings for the current tab with `?`.
   touched, with added/removed counts) → color words → Git → a diff tool if one is set
 - Toggle details panel wrapping with `W`
 - Create new change after highlighted change with `n` (`jj new`)
-  - Create new change and describe with `N` (`jj new -m`)
+  - Create a new change without moving `@` into it with `N` (`jj new --no-edit`), for setting up
+    a place to work without leaving the one you are in — the cursor moves to the new change, so
+    `e` there enters it if you change your mind
 - Splice rather than append by marking a *before*-anchor with `i` (`⌄` in the graph): the change
   `n` creates or `r` moves lands *below* it, i.e. the anchor becomes its child. `Space` marks
   *after*-anchors (`✓`), which become its parents. The two marks are exclusive on a revision
@@ -250,7 +252,7 @@ See all key mappings for the current tab with `?`.
     absolute set you pick, not an edit of today's parents
   - `Esc` clears both kinds of mark
 - Create a new change *beside* the selected one, sharing its parents, by pressing `r` then `n`
-  (or `N` to describe it). The rebase gesture seeds the marks with the change's current parents,
+  (or `N` to leave `@` where it is). The rebase gesture seeds the marks with the change's current parents,
   so `n` there builds a sibling instead of moving anything; the gesture ends and the usual `n`
   confirmation shows how many parents it picked up
 - Git submodules are surfaced read-only, since jj ignores them entirely (it prints
