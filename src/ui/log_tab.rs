@@ -145,6 +145,13 @@ fn draw_prompt_bar(
     f.render_widget(textarea, input);
 }
 
+/// Abbreviate a git object id for display, matching the 8 characters jj shows
+/// for its own commit ids. Ids shorter than that are left alone.
+fn short_commit(commit: &str) -> &str {
+    const SHORT_LEN: usize = 8;
+    commit.get(..SHORT_LEN).unwrap_or(commit)
+}
+
 /// Width of a revset field's label column, e.g. `" Show:"` plus its trailing space.
 const REVSET_FIELD_LABEL_WIDTH: u16 = 7;
 
@@ -373,7 +380,7 @@ impl<'a> LogTab<'a> {
         let config = get_env().jj_config.clone();
         let pane_divider = PaneDivider::new(config.layout_percent());
 
-        Ok(Self {
+        let mut log_tab = Self {
             revset_editor: None,
             file_filter_textarea: None,
             pending_widen: None,
@@ -411,7 +418,14 @@ impl<'a> LogTab<'a> {
             config,
             pane_divider,
             keybinds,
-        })
+        };
+
+        // Seed the submodule check so a pointer that was already moved before
+        // jjscope started is reported on the first frame, not only after a
+        // refresh.
+        log_tab.refresh_dirty_submodules();
+
+        Ok(log_tab)
     }
 
     /// Set cursor and update log panel and diff panel
@@ -426,6 +440,30 @@ impl<'a> LogTab<'a> {
         self.log_panel.refresh_log_output();
         self.update_cache_active_commits();
         self.sync_head_output();
+    }
+
+    /// Re-check whether any submodule's checked-out commit has drifted from
+    /// what `@` records, and show it in the panel title.
+    ///
+    /// Deliberately not called from [Self::refresh_log_output], which runs on
+    /// every cursor move: this shells out to git once per submodule and the
+    /// answer depends only on `@` and the working copy, neither of which
+    /// scrolling changes. Refreshes, tab focus, and startup cover it.
+    ///
+    /// Costs nothing in a repo without submodules — [Commander::has_submodules]
+    /// is a single filesystem check.
+    fn refresh_dirty_submodules(&mut self) {
+        let commander = new_commander();
+        if !commander.has_submodules() {
+            self.log_panel.dirty_submodules.clear();
+            return;
+        }
+        // A failure here means git could not answer, which is not worth a popup
+        // on a background check: fall back to reporting nothing dirty.
+        self.log_panel.dirty_submodules = commander
+            .get_current_head()
+            .and_then(|head| commander.get_dirty_submodules(&head.commit_id))
+            .unwrap_or_default();
     }
 
     /// Extract selection from log panel and update change details panel
@@ -495,13 +533,88 @@ impl<'a> LogTab<'a> {
             .get_commit_show(commit_id, diff_format, true)
             .map(|text| tabs_to_spaces(&text));
         // Format output as string
-        let output = match head_output {
+        let mut output = match head_output {
             Ok(head_output) => head_output,
             Err(err) => err.to_string(),
         };
+
+        // jj carries gitlinks but never interprets them, so `jj show` renders a
+        // submodule bump as a one-line text edit. Append what actually changed.
+        if let Some(section) = Self::submodule_section(&commander, head) {
+            output.push_str(&section);
+        }
+
         // Build value used by cache and return it
         let key = CommitShowKey::new(head.clone(), diff_format.clone(), inner_width);
         CommitShowValue::new(key, output)
+    }
+
+    /// Render the submodule pointer changes this revision makes, if any, as a
+    /// section to append to the details panel.
+    ///
+    /// Returns `None` when the repo has no submodules (the common case, and a
+    /// single filesystem check) or when this revision touches none of them.
+    fn submodule_section(commander: &Commander, head: &Head) -> Option<String> {
+        if !commander.has_submodules() {
+            return None;
+        }
+
+        // Diff against the first parent: a merge's gitlink is compared to the
+        // branch it continues, which is the same convention `jj show` uses for
+        // file contents.
+        let parent = commander
+            .get_commit_parents(&head.commit_id)
+            .ok()
+            .and_then(|parents| parents.into_iter().next());
+        let changes = commander
+            .get_submodule_changes(&head.commit_id, parent.as_ref())
+            .ok()?;
+        if changes.is_empty() {
+            return None;
+        }
+
+        let mut section = String::from("\n");
+        for change in &changes {
+            section.push_str(&format!("\nSubmodule {}:\n", change.path));
+            match (&change.from, &change.to) {
+                (Some(from), Some(to)) => {
+                    let arrow = if change.reversed { "←" } else { "→" };
+                    section.push_str(&format!(
+                        "    {} {arrow} {}\n",
+                        short_commit(from),
+                        short_commit(to)
+                    ));
+                }
+                (None, Some(to)) => {
+                    section.push_str(&format!("    added at {}\n", short_commit(to)));
+                }
+                (Some(from), None) => {
+                    section.push_str(&format!("    removed (was {})\n", short_commit(from)));
+                }
+                (None, None) => {}
+            }
+
+            if change.commits.is_empty() {
+                // No range to show: either the submodule is not checked out, or
+                // the objects were never fetched. Say so rather than leaving the
+                // reader to wonder whether the bump was empty.
+                if change.from.is_some() && change.to.is_some() {
+                    section.push_str("    (commits unavailable — submodule not checked out?)\n");
+                }
+            } else {
+                const SHOWN: usize = 10;
+                if change.reversed {
+                    section.push_str("    rolled back over:\n");
+                }
+                for line in change.commits.iter().take(SHOWN) {
+                    section.push_str(&format!("      {line}\n"));
+                }
+                if change.commits.len() > SHOWN {
+                    section.push_str("      …\n");
+                }
+            }
+        }
+        Some(section)
     }
 }
 
@@ -1447,6 +1560,7 @@ impl<'a> LogTab<'a> {
                 // commit. get_head_latest follows the change's evolution and
                 // falls back to @ if the change is gone.
                 self.set_head(new_commander().get_head_latest(&self.head)?);
+                self.refresh_dirty_submodules();
             }
 
             LogTabEvent::Duplicate => {
@@ -1813,6 +1927,7 @@ impl Component for LogTab<'_> {
     fn focus(&mut self) -> Result<()> {
         let latest_head = new_commander().get_head_latest(&self.head)?;
         self.set_head(latest_head);
+        self.refresh_dirty_submodules();
         Ok(())
     }
 

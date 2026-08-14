@@ -242,6 +242,27 @@ See all key mappings for the current tab with `?`.
   (or `N` to describe it). The rebase gesture seeds the marks with the change's current parents,
   so `n` there builds a sibling instead of moving anything; the gesture ends and the usual `n`
   confirmation shows how many parents it picked up
+- Git submodules are surfaced read-only, since jj ignores them entirely (it prints
+  `ignoring git submodule at ...` on import and never interprets the gitlink again)
+  - A revision that moves a submodule pointer shows what actually changed, instead of jj's
+    `vendor/inner | 1 +` — which counts the 40-byte object id as a one-line text edit:
+
+    ```
+    Submodule vendor/inner:
+        cc993a43 → f5ea02cf
+          f5ea02c inner v4
+          f6c2046 inner v3
+    ```
+
+    The commit list comes from the submodule's own checkout, so a submodule that isn't checked
+    out (or whose objects were never fetched) shows the pointers alone and says so
+  - The log panel title warns when a submodule's checked-out commit no longer matches what `@`
+    records — `submodule vendor/inner moved, not recorded in @`. jj cannot see this at all:
+    `jj status` reports a clean working copy while `git status` reports `M vendor/inner`, so
+    without the warning the UI denies that an uncommitted change exists
+  - Nothing here writes to a submodule. jj cannot track such a change, so jjscope would only be
+    creating state that jj disagrees with — use `git` directly for that
+  - Repos with no `.gitmodules` pay nothing: the check is a single filesystem test
 - Edit highlighted change with `e` (`jj edit`)
   - Edit highlighted change ignoring immutability with `E` (`jj edit --ignore-immutable`)
 - Abandon a change with `a` (`jj abandon`)

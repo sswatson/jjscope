@@ -107,7 +107,30 @@ const BINARY_PLACEHOLDER: &str = "    (binary)";
 // Example line: `A README.md`, `M src/main.rs`, `D Hello World`
 static FILES_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(.) (.*)").unwrap());
 static RENAME_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{(.*?) => (.*?)\}").unwrap());
-static CONFLICTS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(.*)    .*").unwrap());
+/// Matches the description `jj resolve --list` puts after each path, e.g.
+/// `2-sided conflict`, `3-sided conflict including 1 deletion`.
+///
+/// Anchored to the end of the line so [parse_conflict_line] can split a path
+/// off the front: the description's shape is fixed, while a path may itself
+/// contain spaces.
+static CONFLICT_DESCRIPTION_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s+\d+-sided conflict\b.*$").unwrap());
+
+/// Pull the path out of one `jj resolve --list` line.
+///
+/// Lines are `<path><padding><description>`, where jj pads the path column to
+/// the longest path in the list — but only up to a minimum width. A single
+/// conflict on a long path therefore gets exactly one space, which is why this
+/// cannot key off a fixed run of spaces (doing so silently reported "no
+/// conflicts" for any revision whose conflicted paths were all long).
+///
+/// Splitting on the *description* instead: its shape is fixed (`N-sided
+/// conflict...`), while a path may contain spaces of its own.
+fn parse_conflict_line(line: &str) -> Option<String> {
+    let description = CONFLICT_DESCRIPTION_REGEX.find(line)?;
+    let path = line[..description.start()].trim_end();
+    (!path.is_empty()).then(|| path.to_owned())
+}
 
 /// jj's fileset pattern kinds, as accepted in a `kind:pattern` prefix. Used by
 /// [Commander::quote_fileset] to tell an explicit pattern kind apart from a
@@ -220,15 +243,8 @@ impl Commander {
         match output {
             Ok(output) => Ok(output
                 .lines()
-                .filter_map(|line| {
-                    let captured = CONFLICTS_REGEX.captures(line);
-                    captured
-                        .as_ref()
-                        .and_then(|captured| captured.get(1))
-                        .map(|inner_text| Conflict {
-                            path: inner_text.as_str().to_owned(),
-                        })
-                })
+                .filter_map(parse_conflict_line)
+                .map(|path| Conflict { path })
                 .collect()),
             Err(CommandError::Status(_, Some(2))) => {
                 // No conflicts
@@ -1264,6 +1280,88 @@ mod tests {
         assert_eq!(command.argv[1], "--wait");
         assert!(!command.argv.iter().any(|a| a == "-R"));
         assert!(command.argv.last().unwrap().contains("jjscope-"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_conflict_line_handles_single_space_padding() {
+        // jj pads the path column to the longest path, but only up to a minimum
+        // width: one long path gets a single space. Keying off a fixed run of
+        // spaces missed these entirely and reported the revision as unconflicted.
+        assert_eq!(
+            parse_conflict_line(
+                "research/mpo/precision_schedule_experiment/run_precision_schedule_sweep.m 2-sided conflict including 1 deletion"
+            ),
+            Some("research/mpo/precision_schedule_experiment/run_precision_schedule_sweep.m".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_conflict_line_handles_column_padding() {
+        assert_eq!(
+            parse_conflict_line("a.txt                   2-sided conflict"),
+            Some("a.txt".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_conflict_line_keeps_paths_containing_spaces() {
+        assert_eq!(
+            parse_conflict_line("my dir/some file.txt    3-sided conflict"),
+            Some("my dir/some file.txt".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_conflict_line_ignores_unrelated_output() {
+        assert_eq!(parse_conflict_line(""), None);
+        assert_eq!(parse_conflict_line("Working copy  (@) : abc123"), None);
+    }
+
+    #[test]
+    fn get_conflicts_finds_a_long_single_path() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let dir = test_repo.directory.path();
+
+        // Long enough that jj's column padding collapses to one space, which is
+        // the case the old parser silently dropped.
+        let long_path = "deep/nested/dir/structure/that/is/long/somefile_with_a_long_name.txt";
+        let file_path = dir.join(long_path);
+        let parent_dir = file_path.parent().expect("long path has a parent");
+
+        let head0 = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_new([head0.commit_id.as_str()])?;
+        let head1 = test_repo.commander.get_current_head()?;
+        fs::create_dir_all(parent_dir)?;
+        fs::write(&file_path, b"AAA")?;
+
+        test_repo.commander.run_new([head0.commit_id.as_str()])?;
+        let head2 = test_repo.commander.get_current_head()?;
+        fs::create_dir_all(parent_dir)?;
+        fs::write(&file_path, b"BBB")?;
+
+        test_repo
+            .commander
+            .jj([
+                "rebase",
+                "-s",
+                head2.change_id.as_str(),
+                "-d",
+                head1.change_id.as_str(),
+            ])
+            .run_void()?;
+
+        let head = test_repo.commander.get_current_head()?;
+        let conflicts = test_repo.commander.get_conflicts(&head.commit_id)?;
+
+        assert_eq!(
+            conflicts,
+            vec![Conflict {
+                path: long_path.to_owned()
+            }]
+        );
 
         Ok(())
     }

@@ -76,6 +76,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Log tab: a `jj new` that jj rejects — inserting before an immutable commit, say — now shows
   the error in a popup instead of exiting the TUI. The error propagated out of `update()`,
   which tears the whole app down; a refused command should just report itself
+- Files tab: conflicted files are listed again for revisions whose conflicted paths are long.
+  `jj resolve --list` pads the path column to the longest path but only up to a minimum width,
+  so a lone long path is followed by a single space — and the parser required four, silently
+  dropping every such conflict and showing the revision as having none. The same greedy pattern
+  also captured the column padding as part of the path when it did match, so `v`/`V`/`m` on a
+  short-named conflicted file reported "The selected file has no conflict to resolve". Paths are
+  now split off the fixed `N-sided conflict...` description instead, which also keeps paths that
+  contain spaces intact
 - Browsing a revision with `o` no longer expands Git LFS pointers. `git archive` runs the
   smudge filter by default, so a revision whose tree is a few dozen MB could materialize
   many times that — in one repo a 135-byte pointer became a 1 GB file, making `o` take 3.7s
@@ -85,6 +93,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Git submodules are now visible, read-only. jj ignores submodules — it carries the gitlink but
+  never interprets it — so a pointer bump rendered as `vendor/inner | 1 +`, counting a 40-byte
+  object id as a one-line text edit. The details panel now shows the old and new pointers and
+  the commits between them, read from the submodule's own checkout; when the submodule isn't
+  checked out it shows the pointers and says the commits are unavailable. Separately, the log
+  panel title warns when a submodule's checked-out commit differs from what `@` records — jj's
+  own status reports a clean working copy in that case, so the change was previously invisible.
+  Nothing writes to submodules: jj could not track it. Repos without `.gitmodules` are
+  unaffected, the check being a single filesystem test
 - Details panel: added a `--stat` view — just the files a change touches with their
   added/removed counts — for taking in the shape of a change without reading it. jj sizes the
   histogram bars to the terminal width, so unlike the other text formats this one is cached per

@@ -18,6 +18,7 @@ use crate::commander::ids::ChangeId;
 use crate::commander::ids::CommitId;
 use crate::commander::log::Head;
 use crate::commander::log::LogOutput;
+use crate::commander::submodules::DirtySubmodule;
 use crate::commander::new_commander;
 use crate::env::JjConfig;
 use crate::env::get_env;
@@ -100,6 +101,15 @@ pub struct LogPanel<'a> {
 
     /// When set, shown as the panel title instead of the usual "Log"/"Log for: <revset>" title
     pub title_override: Option<String>,
+
+    /// Submodules whose checked-out commit differs from what `@` records.
+    ///
+    /// Appended to the panel title rather than replacing it, so it survives a
+    /// pick gesture (which owns [Self::title_override]) and stays visible for
+    /// as long as it is true. jj cannot see these pointer moves at all — its
+    /// status reports a clean working copy — so without this the UI actively
+    /// denies that the change exists.
+    pub dirty_submodules: Vec<DirtySubmodule>,
 
     /// Active vim-style search. While a query is set, lines whose text
     /// contains it are highlighted, and n/N navigate between matching changes.
@@ -188,6 +198,23 @@ fn append_marking_to_title(
         );
     }
     format!("{title} — marking: {marking} ")
+}
+
+/// Append a warning naming the submodules whose checked-out commit differs
+/// from what `@` records.
+///
+/// Deliberately worded as "not recorded in @" rather than "modified": jj has
+/// no way to record it, so this is not a change the user can commit from here.
+fn append_dirty_submodules_to_title(title: &str, dirty: &[DirtySubmodule]) -> String {
+    let title = title.trim_end();
+    match dirty {
+        [] => format!("{title} "),
+        [one] => format!(
+            "{title} — submodule {} moved, not recorded in @ ",
+            truncate_for_title(&one.path)
+        ),
+        many => format!("{title} — {} submodules moved, not recorded in @ ", many.len()),
+    }
 }
 
 /// Set the background colour of a whole line, including past its last span so
@@ -293,6 +320,7 @@ impl<'a> LogPanel<'a> {
             absorbed_heads: HashSet::new(),
             rebased_heads: HashSet::new(),
             title_override: None,
+            dirty_submodules: Vec::new(),
             search: SearchState::new(),
             highlight: HighlightState::new(),
 
@@ -811,6 +839,10 @@ impl Component for LogPanel<'_> {
                 self.highlight.matching_count(),
                 self.visible_highlight_count(),
             );
+        }
+
+        if !self.dirty_submodules.is_empty() {
+            title = append_dirty_submodules_to_title(&title, &self.dirty_submodules);
         }
 
         let log_lines = self.log_lines();
