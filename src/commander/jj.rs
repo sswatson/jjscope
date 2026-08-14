@@ -256,6 +256,28 @@ impl Commander {
         }
     }
 
+    /// Build the invocation for describing a revision in the user's editor.
+    /// Maps to `jj describe -r <rev>` with no `-m`, which is what makes jj open
+    /// `$EDITOR` (or `ui.editor`) on the current description.
+    ///
+    /// Returns the command for the main loop to run with the terminal handed
+    /// over ([crate::commander::JjCommand::run_interactive]), rather than an
+    /// in-TUI text box: a description can be long, and a real editor brings the
+    /// user's own keybindings, wrapping, and undo to it.
+    pub fn describe_interactive_command(
+        revision: &str,
+        ignore_immutable: bool,
+    ) -> InteractiveCommand {
+        let mut args = vec!["describe".to_owned(), "-r".to_owned(), revision.to_owned()];
+        if ignore_immutable {
+            args.push("--ignore-immutable".to_owned());
+        }
+        InteractiveCommand {
+            args,
+            name: "Describe".to_owned(),
+        }
+    }
+
     /// Build the invocation for editing a revision's own content in the diff
     /// editor. Maps to `jj diffedit -r <rev>`, which shows the revision's
     /// changes against *all* its parents.

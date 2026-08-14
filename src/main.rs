@@ -170,6 +170,20 @@ fn run_app(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
             let _ = app.draw(f, f.area());
         })?;
 
+        // Run work queued by `update()` before blocking on input: `update()`
+        // handles the confirm-dialog callbacks, so an action it returns (a
+        // describe handing over to the editor, say) would otherwise sit unrun
+        // until the user happened to press another key.
+        if let Some(command) = app.pending_interactive.take() {
+            run_interactive_command(terminal, app, command)?;
+            continue;
+        }
+
+        if let Some(command) = app.pending_editor.take() {
+            run_editor_command(terminal, app, command)?;
+            continue;
+        }
+
         let should_stop = input_to_app(app)?;
 
         if should_stop {
