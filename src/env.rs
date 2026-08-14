@@ -163,19 +163,38 @@ pub struct JjConfigTemplates {
 }
 
 impl JjConfig {
-    /// The format the details panel opens in.
+    /// The format a whole-revision details panel opens in (log, bookmarks,
+    /// tags).
     ///
     /// Falls back to [DiffFormat::Stat]: the shape of a change — which files it
     /// touches, and how much of each — is what you want first, and `w` steps to
     /// the contents when you want them. An explicitly configured format, jj's
     /// own `ui.diff.format`, or a configured diff tool all still win.
     pub fn diff_format(&self) -> DiffFormat {
+        self.configured_diff_format().unwrap_or(DiffFormat::Stat)
+    }
+
+    /// The format the files tab's per-file diff opens in.
+    ///
+    /// Falls back to [DiffFormat::ColorWords] rather than `Stat`: that panel
+    /// shows one file, and `--stat` for a single file is a one-line summary of
+    /// the diff the panel exists to display. The stat view earns its place as a
+    /// whole-revision overview, which is not what this panel is.
+    ///
+    /// An explicit configuration still wins, including `stat` — someone who
+    /// asked for it everywhere gets it everywhere.
+    pub fn file_diff_format(&self) -> DiffFormat {
+        self.configured_diff_format()
+            .unwrap_or(DiffFormat::ColorWords)
+    }
+
+    /// The diff format the user configured, if any, in precedence order.
+    fn configured_diff_format(&self) -> Option<DiffFormat> {
         self.jjscope
             .diff_format
             .clone()
             .or_else(|| self.ui.diff.format.clone())
             .or_else(|| self.diff_tool().map(DiffFormat::DiffTool))
-            .unwrap_or(DiffFormat::Stat)
     }
 
     pub fn diff_tool(&self) -> Option<Option<String>> {

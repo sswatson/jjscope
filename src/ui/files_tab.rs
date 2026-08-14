@@ -95,7 +95,7 @@ impl FilesTab {
         let head = head.clone();
         let is_current_head = head == new_commander().get_current_head()?;
 
-        let diff_format = get_env().jj_config.diff_format();
+        let diff_format = get_env().jj_config.file_diff_format();
 
         let files_output = new_commander().get_files(&head);
         let conflicts_output = new_commander().get_conflicts(&head.commit_id)?;
