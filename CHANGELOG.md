@@ -11,11 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- The details panel now opens in the new `--stat` format instead of color words, and `w` cycles
-  stat → color words → git → diff tool (if set). The shape of a change is usually what you want
-  first, and `w` is one keypress from the contents. Set `jjscope.diff-format = "color-words"` to
-  get the old default back; an explicitly configured format, `ui.diff.format`, or a configured
-  diff tool all still take precedence, so only users with no diff config see the change
+
+- Whole-revision details panels (log, bookmarks, tags) now open in the new `--stat` format
+  instead of color words, and `w` cycles stat → color words → git → diff tool (if set). The
+  shape of a change is usually what you want first, and `w` is one keypress from the contents.
+  The files tab is unaffected: it shows one file, where `--stat` is a one-line summary of the
+  very diff the panel exists to display, so it still opens in color words. Set
+  `jjscope.diff-format = "color-words"` to get the old default back everywhere; an explicitly
+  configured format, `ui.diff.format`, or a configured diff tool all still take precedence — and
+  an explicit `stat` applies to the files tab too
 - Log tab: the separate insert commands (`i`/`I`) are gone. Splicing is no longer its own verb:
   `i` now marks the selected revision as a *before*-anchor (`⌄`), the counterpart to `Space`'s
   *after*-anchor (`✓`), and `n`/`r` read both sets. `n` with a before-anchor inserts
@@ -93,6 +97,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Mark the revisions touching the same files as other revisions. Two entry points into one
+  highlight:
+  - Log tab: `Ctrl+t` takes the union of the files the marked revisions touch (or the selected
+    one's) and marks every revision touching any of them — "what else has been near this work"
+  - Files tab: `Space` marks a file (`a` marks or clears all), and `T` then marks the revisions
+    touching any of the marked files. With nothing marked `T` uses the selected file, as before.
+    Marks persist across revisions, so a file set can be built up while browsing
+  - The union is computed per revision rather than with one `jj diff -r 'a|b'`: that asks for the
+    *combined* diff, in which a change and its revert cancel out, so a file both revisions touched
+    would be missing entirely
 - Git submodules are now visible, read-only. jj ignores submodules — it carries the gitlink but
   never interprets it — so a pointer bump rendered as `vendor/inner | 1 +`, counting a 40-byte
   object id as a one-line text edit. The details panel now shows the old and new pointers and

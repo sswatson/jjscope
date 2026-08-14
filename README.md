@@ -32,9 +32,10 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - View files in current change and diff in side panel
   - See a change's files from the log tab with `Enter`
   - View conflicts list in current change
-  - Toggle the diff between a `--stat` summary (default), color words, and git diff with `w`
+  - Toggle the diff between color words (default), git diff, and a `--stat` summary with `w`
   - Browse the whole repo at the shown revision in your editor with `o`
-  - Mark the revisions touching the selected file on the log tab with `T`
+  - Mark files with `Space`/`a`, then mark the revisions touching any of them on the log tab
+    with `T`
   - Untrack file with `x`
 - Tags
   - View list of tags, including remote tags with `a`
@@ -67,7 +68,9 @@ To build and install a pre-release version: `cargo install --git https://github.
 You can optionally configure the following options through your jj config:
 
 - `jjscope.highlight-color`: Changes the highlight color. Can use named colors. Defaults to `#323264`
-- `jjscope.diff-format`: Change the default diff format. Can be `color-words`, `git`, or `stat`. Defaults to `stat`
+- `jjscope.diff-format`: Change the default diff format. Can be `color-words`, `git`, or `stat`.
+  Defaults to `stat` for whole-revision panels (log, bookmarks, tags) and `color-words` for the
+  files tab's per-file diff; setting it explicitly applies one format everywhere
   - If `jjscope.diff-format` is not set but `ui.diff.format` is, the latter will be used
 - `jjscope.diff-tool`: Specify which diff tool to use by default
   - If `jjscope.diff-tool` is not set but `ui.diff.tool` is, the latter will be used
@@ -218,6 +221,14 @@ See all key mappings for the current tab with `?`.
     that directory and `src/*.rs` honours the glob. Prefix it to change that: `glob:'src/**/*.rs'`,
     `file:src/app.rs` for one exact file, `root:src` to resolve from the workspace root instead
     of the working directory
+- Mark the revisions *related* to the marked ones with `Ctrl+t`: takes the union of the files the
+  marked revisions touch (or the selected revision's, if none are marked) and marks every revision
+  touching any of them. `Ctrl+t` again clears it, and the title says how many revisions and files
+  it drew from
+  - The source revisions match themselves, since their own files are in the set — that's wanted,
+    as it shows the group being compared against
+  - For a specific subset of files rather than a whole revision's worth, mark the files on the
+    files tab with `Space` and press `T` there instead; both land in the same highlight
 - Change details panel diff format with `w`, cycling `--stat` (the default: just the files
   touched, with added/removed counts) → color words → Git → a diff tool if one is set
 - Toggle details panel wrapping with `W`
@@ -342,10 +353,16 @@ See all key mappings for the current tab with `?`.
 - Browse the whole repo at the revision being shown with `o` (same as the log tab). The files
   list only holds the files that revision *changed*, so this is how to reach everything else
   at that revision
-- Mark the revisions touching the selected file with `T`, the same key as on the log tab:
-  switches to the log tab with that file marked, so you can see its history in the graph without
-  typing or pasting the path. Matched exactly (`file:`), since the path came from jj rather than
-  from you — where a path typed on the log tab prefix-matches, so a directory works
+- Mark files with `Space` (`✓` in the leading column), or `a` to mark every file in the revision
+  — pressing `a` again when all are marked clears them
+  - Marks persist as you move between revisions, so a file set can be built up while browsing.
+    The panel title keeps a count, since a mark on a file the current revision doesn't touch has
+    no glyph to show
+- Mark the revisions touching those files with `T`, the same key as on the log tab: switches to
+  the log tab with every revision touching *any* of the marked files marked, so you can see what
+  else has been near them. With nothing marked it uses the selected file, so `T` alone behaves as
+  it always has. Matched exactly (`file:`), since the paths came from jj rather than from you —
+  where a path typed on the log tab prefix-matches, so a directory works
   - A renamed file may hand over only the changed part of its path, since jj writes renames as
     `src/{old.rs => new.rs}`. Nothing matches in that case; retype the full path with `T` on the
     log tab
@@ -359,8 +376,9 @@ See all key mappings for the current tab with `?`.
   - `v` keeps the rebased/squashed revision's version; `V` keeps the rebase/squash destination's version
   - `m` resolves in the configured merge editor (`jj resolve`), file by file on the log tab
     or just the selected file on the files tab
-- Change details panel diff format with `w`, cycling `--stat` (the default: just the files
-  touched, with added/removed counts) → color words → Git → a diff tool if one is set
+- Diff format for the selected file with `w`, cycling color words (the default here) → Git →
+  a diff tool if one is set → `--stat`. Unlike the whole-revision panels, this one shows a
+  single file, so it opens on the diff rather than the one-line stat summary of it
 - Toggle details panel wrapping with `W`
 
 ### Bookmarks tab
