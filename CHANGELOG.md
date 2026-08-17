@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Log tab: `=` (diff edit) no longer refuses outright on an empty change. "Empty" means empty
+  against the revision's own parents, which is only the no-base case — against an earlier
+  ancestor there may well be a diff to edit, and picking that base is the whole point of the
+  gesture. The check now happens once the base is known, applies only to the `-r` path, and
+  leaves the gesture up so a base can be picked instead of starting over
 - Log tab: a `jj new` that jj rejects — inserting before an immutable commit, say — now shows
   the error in a popup instead of exiting the TUI. The error propagated out of `update()`,
   which tears the whole app down; a refused command should just report itself

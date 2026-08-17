@@ -326,6 +326,11 @@ See all key mappings for the current tab with `?`.
     *other* parent's changes as part of the diff, so deselecting them would revert that
     branch's work rather than drop this change's. Use `Enter` with the cursor left in place
     to edit just the merge's own contribution
+  - An *empty* change can still be diff-edited against a different base: "empty" means empty
+    against its own parents, and against an earlier ancestor there may well be a diff. So `=`
+    starts the gesture on an empty change, and only refuses if you then ask for its own diff
+    (`Enter` with the cursor left in place) — leaving the gesture up so you can pick a base
+    instead
 - Rebase changes with `r` (`jj rebase -s`/`-r`): press `r` to pick up the marked changes
   (or the highlighted one), then edit the parent set and press `Enter`. Descendants come
   along by default (`jj rebase -s`)

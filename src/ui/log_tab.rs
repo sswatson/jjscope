@@ -876,15 +876,11 @@ impl<'a> LogTab<'a> {
                 "The change cannot be edited because it is immutable.",
             );
         }
-        // Like split: an empty change has no diff, so jj would open the
-        // editor on nothing (or not at all) — catch it here
-        if new_commander().check_revision_empty(self.head.commit_id.as_str())? {
-            return Self::message_popup(
-                "Diff edit",
-                "The change is empty; there is no diff to edit.",
-            );
-        }
-
+        // Deliberately *not* checking emptiness here. "Empty" means empty
+        // against this revision's own parents, which is only the `-r` case; the
+        // whole point of the gesture is that a different base can be picked,
+        // and against that base an "empty" revision may well have a diff. The
+        // check happens once the base is known (see [Self::advance_pick]).
         let target = self.head.commit_id.clone();
         self.pick_state = PickState::DiffEditFrom { target };
         self.update_pick_title();
@@ -1166,6 +1162,20 @@ impl<'a> LogTab<'a> {
                     );
                 };
                 let from = (*from != target).then(|| from.clone());
+
+                // Only the no-base case (`-r`) needs the emptiness guard: there
+                // the diff really is the revision against its own parents, and
+                // jj would open the editor on nothing. With a base picked, an
+                // "empty" revision can still differ from it, which is exactly
+                // why the check cannot happen before the base is known.
+                if from.is_none()
+                    && new_commander().check_revision_empty(target.as_str())?
+                {
+                    return Self::message_popup(
+                        "Diff edit",
+                        "The change is empty against its own parents. Pick another revision to edit against.",
+                    );
+                }
 
                 self.pick_state = PickState::Idle;
                 self.log_panel.title_override = None;
