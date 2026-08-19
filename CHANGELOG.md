@@ -106,6 +106,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Log tab: the `(elided revisions)` row can be cursored onto, and `Enter` there reveals the
+  revisions it stands for by widening the log's revset to fill in that one gap. Previously the
+  row was skipped by navigation and there was no way to see behind it short of editing the
+  revset by hand. Scoped to the single gap rather than every elision in the graph, and the
+  result is a plain revset that `Ctrl+r` can edit. While parked on the row, commands that act
+  on a revision refuse instead of acting on the revision above it
 - Mark the revisions touching the same files as other revisions. Two entry points into one
   highlight:
   - Log tab: `Ctrl+t` takes the union of the files the marked revisions touch (or the selected

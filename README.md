@@ -231,6 +231,16 @@ See all key mappings for the current tab with `?`.
     files tab with `Space` and press `T` there instead; both land in the same highlight
 - Change details panel diff format with `w`, cycling `--stat` (the default: just the files
   touched, with added/removed counts) → color words → Git → a diff tool if one is set
+- Cursor onto an `(elided revisions)` row and press `Enter` to reveal what it stands for. jj
+  prints that placeholder where the revset selects around revisions without containing them;
+  the cursor now stops on it like any other row, and `Enter` widens the log's revset to fill in
+  that one gap
+  - Only that gap: with several branches partly shown, expanding one leaves the others elided.
+    The added term is the range between the placeholder's revision and its nearest *shown*
+    ancestors, so it is an ordinary revset — `Ctrl+r` afterwards shows and edits it like any other
+  - The row is a placeholder, not a change, so commands that act on a revision refuse while the
+    cursor is parked there rather than quietly acting on the revision above it. Navigation, the
+    view controls, and `Enter` are what work
 - Toggle details panel wrapping with `W`
 - Create new change after highlighted change with `n` (`jj new`)
   - Create a new change without moving `@` into it with `N` (`jj new --no-edit`), for setting up

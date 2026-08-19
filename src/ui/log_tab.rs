@@ -144,6 +144,38 @@ fn draw_prompt_bar(
     f.render_widget(textarea, input);
 }
 
+/// Which log-tab events still make sense while the cursor is parked on an
+/// "(elided revisions)" row.
+///
+/// Navigation, view controls, and repo-wide actions are fine; anything that
+/// reads the selection as a revision to act on is not. Enter is allowed
+/// because it is what expands the placeholder.
+fn elided_row_allows(event: LogTabEvent) -> bool {
+    matches!(
+        event,
+        LogTabEvent::ScrollDown
+            | LogTabEvent::ScrollUp
+            | LogTabEvent::ScrollDownHalf
+            | LogTabEvent::ScrollUpHalf
+            | LogTabEvent::ScrollToBottom
+            | LogTabEvent::ScrollToTop
+            | LogTabEvent::FocusCurrent
+            | LogTabEvent::ToggleDiffFormat
+            | LogTabEvent::Refresh
+            | LogTabEvent::OpenFiles
+            | LogTabEvent::EditRevset
+            | LogTabEvent::Search
+            | LogTabEvent::FileFilter
+            | LogTabEvent::Cancel
+            | LogTabEvent::ClosePopup
+            | LogTabEvent::Undo
+            | LogTabEvent::Redo
+            | LogTabEvent::Fetch { .. }
+            | LogTabEvent::OpenHelp
+            | LogTabEvent::Unbound
+    )
+}
+
 /// Abbreviate a git object id for display, matching the 8 characters jj shows
 /// for its own commit ids. Ids shorter than that are left alone.
 fn short_commit(commit: &str) -> &str {
@@ -1444,6 +1476,60 @@ impl<'a> LogTab<'a> {
         ComponentInputResult::Handled
     }
 
+    /// Reveal the revisions behind the "(elided revisions)" row the cursor is
+    /// parked on, by widening the log's revset to include that one gap.
+    ///
+    /// The added term is the range between the placeholder's owner and its
+    /// nearest *shown* ancestors:
+    ///
+    /// ```text
+    /// <current> | (heads(::N ~ N & (<current>))::N)
+    /// ```
+    ///
+    /// Scoped to the one gap rather than a blanket `connected(<current>)`,
+    /// which would fill in every elision in the graph at once — on a log with
+    /// several branches that is a much bigger change to the view than clicking
+    /// one placeholder asks for.
+    fn expand_elided(&mut self) -> Result<ComponentInputResult> {
+        let Some(owner) = self.log_panel.elided_owner_selection() else {
+            return Ok(ComponentInputResult::NotHandled);
+        };
+
+        // With no explicit revset the log is showing jj's default, so that is
+        // what has to be widened.
+        let current = match self.log_panel.log_revset.clone() {
+            Some(revset) => revset,
+            None => match new_commander().get_default_log_revset() {
+                Ok(revset) => revset,
+                Err(err) => {
+                    return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                        Some(Box::new(MessagePopup::new(
+                            "Expand",
+                            format!("Could not read the log's default revset: {err}"),
+                        ))),
+                    )));
+                }
+            },
+        };
+
+        let owner_id = owner.commit_id.as_str();
+        let expanded = format!(
+            "({current}) | (heads(::{owner_id} ~ {owner_id} & ({current}))::{owner_id})"
+        );
+
+        self.log_panel.log_revset = Some(expanded);
+        // Land on the revision the gap belonged to, so the newly revealed
+        // ancestors appear just below the cursor rather than somewhere off
+        // screen.
+        self.set_head(owner);
+        self.refresh_log_output();
+        Ok(ComponentInputResult::HandledAction(
+            AppAction::SetStatusMessage(
+                "Expanded elided revisions | Ctrl+r: edit revset".to_owned(),
+            ),
+        ))
+    }
+
     fn handle_transform_description(&mut self, index: usize) -> Result<ComponentInputResult> {
         let Some(transform) = get_env()
             .jj_config
@@ -1600,6 +1686,19 @@ impl<'a> LogTab<'a> {
     }
 
     fn handle_event(&mut self, log_tab_event: LogTabEvent) -> Result<ComponentInputResult> {
+        // An "(elided revisions)" row is a placeholder, not a revision. While
+        // the cursor is parked on one, `self.head` still names the revision it
+        // hangs beneath — convenient for the details panel, but wrong to act
+        // on: `d` there would describe a revision the user is not pointing at.
+        // Allow only what makes sense on a placeholder and refuse the rest,
+        // rather than guarding thirty arms individually.
+        if self.log_panel.is_on_elided_row() && !elided_row_allows(log_tab_event) {
+            return Self::message_popup(
+                "Elided revisions",
+                "This row stands for hidden revisions, not a change. Press Enter to reveal them, or move to a revision first.",
+            );
+        }
+
         match log_tab_event {
             LogTabEvent::ScrollDown
             | LogTabEvent::ScrollUp
@@ -1909,6 +2008,11 @@ impl<'a> LogTab<'a> {
                 )));
             }
             LogTabEvent::OpenFiles => {
+                // On a placeholder, Enter reveals what it stands for rather
+                // than opening files for the revision it hangs beneath.
+                if self.log_panel.is_on_elided_row() {
+                    return self.expand_elided();
+                }
                 return Ok(ComponentInputResult::HandledAction(AppAction::ViewFiles(
                     self.head.clone(),
                 )));
@@ -2321,6 +2425,15 @@ impl Component for LogTab<'_> {
             if !matches!(self.pick_state, PickState::Idle) {
                 match self.keybinds.match_event(key) {
                     LogTabEvent::OpenFiles => {
+                        // A placeholder is not a revision, so it cannot be the
+                        // pick. Say so rather than silently using the revision
+                        // it hangs beneath, which is not what the cursor is on.
+                        if self.log_panel.is_on_elided_row() {
+                            return Self::message_popup(
+                                "Elided revisions",
+                                "This row stands for hidden revisions, not a change. Move to a revision to pick it.",
+                            );
+                        }
                         // "enter" advances the pick gesture instead of opening
                         // files while a pick is being collected.
                         return self.advance_pick();

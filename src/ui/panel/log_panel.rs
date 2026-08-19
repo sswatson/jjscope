@@ -69,6 +69,16 @@ pub struct LogPanel<'a> {
     /// Currently selected commit
     pub head: Head,
 
+    /// When the cursor is parked on an "(elided revisions)" row, the index of
+    /// that graph line; `None` whenever a real revision is selected.
+    ///
+    /// Kept beside [Self::head] rather than making the selection an enum:
+    /// `head` is read by every command in the log tab, and widening its type
+    /// would push "but it might not be a revision" into all of them. Instead
+    /// `head` keeps naming the revision the elided row belongs to, and the
+    /// commands that must not act on a placeholder check this field.
+    pub elided_selection: Option<usize>,
+
     /// Currently marked commits
     pub marked_heads: HashSet<CommitId>,
 
@@ -126,6 +136,22 @@ pub struct LogPanel<'a> {
 
     /// Configuration of colours
     config: JjConfig,
+}
+
+/// A position the cursor can occupy in the log.
+///
+/// Almost always a revision; the exception is jj's "(elided revisions)"
+/// placeholder, which stands for revisions the revset selects around but does
+/// not contain, and which can be expanded into them.
+#[derive(Clone, PartialEq, Eq)]
+enum NavigationStop {
+    Revision(Head),
+    Elided {
+        /// Index of the placeholder's graph line.
+        line: usize,
+        /// The revision the placeholder hangs beneath.
+        owner: Head,
+    },
 }
 
 /// Node glyph shown in place of jj's usual node (`@`/`○`/`◆`/...) for a marked commit.
@@ -314,6 +340,7 @@ impl<'a> LogPanel<'a> {
             log_revset,
 
             head,
+            elided_selection: None,
             marked_heads: HashSet::new(),
             before_marked_heads: HashSet::new(),
             marks_are_parents: false,
@@ -431,7 +458,16 @@ impl<'a> LogPanel<'a> {
                 // Highlight lines that correspond to self.head first, so the
                 // search match (applied after) wins on the selected line and
                 // stays legible instead of being repainted by the selection.
-                if log_output.head_at(i) == Some(&self.head) {
+                //
+                // While parked on an elided row, that row is the selection and
+                // its owner is not: `head` still names the owner (so the details
+                // panel has something to show), but painting both would read as
+                // two cursors.
+                let selected = match self.elided_selection {
+                    Some(elided_line) => i == elided_line,
+                    None => log_output.head_at(i) == Some(&self.head),
+                };
+                if selected {
                     set_bg(&mut line, self.config.highlight_color());
                 };
 
@@ -467,6 +503,12 @@ impl<'a> LogPanel<'a> {
 
     /// Find the line in self.log_output that match self.head
     fn selected_log_line(&self) -> Option<usize> {
+        // Parked on a placeholder: that line is the selection, so the list
+        // scrolls to it rather than to its owning revision.
+        if let Some(elided_line) = self.elided_selection {
+            return Some(elided_line);
+        }
+
         let log_output = self.log_output.as_ref().ok()?;
 
         log_output
@@ -481,10 +523,6 @@ impl<'a> LogPanel<'a> {
     }
 
     // Return the head-index for the selection
-    fn get_current_head_index(&self) -> Option<usize> {
-        get_head_index(&self.head, &self.log_output)
-    }
-
     /// Number of log list items that fit on screen. Think of this as
     /// in unit head-index. Moving the head-index this much causes a
     /// full page scroll.
@@ -496,34 +534,105 @@ impl<'a> LogPanel<'a> {
 
     /// Move selection to a specific head. This may cause the next draw to
     /// scroll to a different line.
+    /// The revision owning the placeholder the cursor is parked on, if any.
+    ///
+    /// `Some` exactly when the selection is an "(elided revisions)" row, so
+    /// callers use it both to detect that state and to act on it.
+    pub fn elided_owner_selection(&self) -> Option<Head> {
+        let line = self.elided_selection?;
+        self.log_output.as_ref().ok()?.elided_owner(line).cloned()
+    }
+
+    /// Whether the cursor is parked on an "(elided revisions)" row rather than
+    /// a real revision.
+    pub fn is_on_elided_row(&self) -> bool {
+        self.elided_selection.is_some()
+    }
+
     pub fn set_head(&mut self, head: Head) {
         head.clone_into(&mut self.head);
+        // Selecting a revision leaves any parked placeholder behind. Callers
+        // that mean to park (see [Self::scroll_relative]) set the field after
+        // this, so the order matters.
+        self.elided_selection = None;
     }
 
     /// Move selection relative to the current position.
     /// The scroll is relative to head-index, not line-index.
     /// This will update self.head
     fn scroll_relative(&mut self, scroll: isize) {
-        let log_output = match self.log_output.as_ref() {
-            Ok(log_output) => log_output,
-            Err(_) => return,
+        let stops = self.navigation_stops();
+        if stops.is_empty() {
+            return;
+        }
+
+        let current = self.current_stop_index(&stops);
+        let next = match current {
+            Some(current) => current
+                .saturating_add_signed(scroll)
+                .min(stops.len() - 1),
+            // Nothing selected yet: enter the list at whichever end the move
+            // came from, so a first `k` does not jump to the bottom.
+            None if scroll < 0 => stops.len() - 1,
+            None => 0,
         };
 
-        let heads: &Vec<Head> = log_output.heads.as_ref();
-
-        let current_head_index = self.get_current_head_index();
-        let next_head = match current_head_index {
-            Some(current_head_index) => heads.get(
-                current_head_index
-                    .saturating_add_signed(scroll)
-                    .min(heads.len() - 1),
-            ),
-            None => heads.first(),
-        };
-        if let Some(next_head) = next_head {
-            self.set_head(next_head.clone());
+        match stops[next].clone() {
+            NavigationStop::Revision(head) => {
+                self.elided_selection = None;
+                self.set_head(head);
+            }
+            NavigationStop::Elided { line, owner } => {
+                // `head` keeps naming the owning revision, so the details panel
+                // and every command still have a revision to work with; the
+                // parked line is what makes the row itself the selection.
+                self.set_head(owner);
+                self.elided_selection = Some(line);
+            }
         }
         // TODO Notify about change of head
+    }
+
+    /// Everything the cursor can land on, in display order: each revision, plus
+    /// each "(elided revisions)" row.
+    fn navigation_stops(&self) -> Vec<NavigationStop> {
+        let Ok(log_output) = self.log_output.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut stops: Vec<NavigationStop> = Vec::new();
+        let mut seen: Option<&Head> = None;
+        for line in 0..log_output.graph.lines().count() {
+            if log_output.is_elided_at(line) {
+                // Attributed to the revision above, which is the one whose
+                // ancestry the placeholder stands in for.
+                if let Some(owner) = log_output.elided_owner(line) {
+                    stops.push(NavigationStop::Elided {
+                        line,
+                        owner: owner.clone(),
+                    });
+                }
+                continue;
+            }
+            // A revision spans two graph lines; take it once, on the first.
+            if let Some(head) = log_output.head_at(line)
+                && seen != Some(head)
+            {
+                stops.push(NavigationStop::Revision(head.clone()));
+                seen = Some(head);
+            }
+        }
+        stops
+    }
+
+    /// Where the cursor currently sits in [Self::navigation_stops].
+    fn current_stop_index(&self, stops: &[NavigationStop]) -> Option<usize> {
+        stops.iter().position(|stop| match stop {
+            NavigationStop::Elided { line, .. } => self.elided_selection == Some(*line),
+            NavigationStop::Revision(head) => {
+                self.elided_selection.is_none() && *head == self.head
+            }
+        })
     }
 
     //

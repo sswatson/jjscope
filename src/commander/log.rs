@@ -42,9 +42,50 @@ pub struct LogOutput {
     pub heads: Vec<Head>,
 }
 
+/// The text jj puts on the graph row standing in for revisions the revset
+/// selects around but does not itself contain.
+const ELIDED_MARKER: &str = "(elided revisions)";
+
 impl LogOutput {
     pub fn head_at(&self, line: usize) -> Option<&Head> {
         self.graph_heads.get(line).and_then(Option::as_ref)
+    }
+
+    /// Whether `line` is jj's synthetic "(elided revisions)" row.
+    ///
+    /// Detected from the graph text rather than from a `None` in
+    /// [Self::graph_heads]: plenty of rows have no head (edge-only rows like
+    /// `├─╯`, the trailing `~`), and only this one stands for revisions that
+    /// could be revealed.
+    pub fn is_elided_at(&self, line: usize) -> bool {
+        self.graph_line(line)
+            .is_some_and(|text| text.contains(ELIDED_MARKER))
+    }
+
+    /// The raw text of graph line `line`, ANSI escapes and all.
+    fn graph_line(&self, line: usize) -> Option<&str> {
+        self.graph.lines().nth(line)
+    }
+
+    /// The revision an elided row belongs to: the nearest head *above* it.
+    ///
+    /// jj prints the placeholder directly beneath the revision whose ancestry
+    /// it truncates, so scanning upwards finds the owner. Line adjacency is not
+    /// ancestry in general — the row below an elision can belong to an
+    /// unrelated branch — which is why this only ever looks up.
+    pub fn elided_owner(&self, line: usize) -> Option<&Head> {
+        if !self.is_elided_at(line) {
+            return None;
+        }
+        (0..line).rev().find_map(|above| self.head_at(above))
+    }
+
+    /// Every line index holding an "(elided revisions)" row.
+    #[cfg(test)]
+    pub fn elided_lines(&self) -> Vec<usize> {
+        (0..self.graph.lines().count())
+            .filter(|line| self.is_elided_at(*line))
+            .collect()
     }
 }
 
@@ -171,6 +212,19 @@ impl Commander {
     /// with a distinct symbol instead of jj's usual node. Each entry is a
     /// glyph and the change/commit IDs (in hex) that should show it; earlier
     /// entries take priority if a commit matches more than one.
+    /// The revset jj would use with no `-r`, as text.
+    ///
+    /// Needed when building an expression *from* the current view: with no
+    /// explicit revset the log shows `revsets.log`, and expanding a gap means
+    /// adding to whatever is actually being shown.
+    pub fn get_default_log_revset(&self) -> Result<String, CommandError> {
+        Ok(self
+            .jj(["config", "get", "revsets.log"])
+            .run()?
+            .trim()
+            .to_owned())
+    }
+
     #[instrument(level = "trace", skip(self, node_overrides))]
     pub fn get_log(
         &self,
@@ -569,6 +623,45 @@ mod tests {
 
         assert!(log.graph.contains("(elided revisions)"));
         assert!(!log.graph.contains("Error"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn elided_rows_are_located_and_attributed() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        let root_head = test_repo.commander.get_current_head()?;
+        fs::write(test_repo.directory.path().join("f.txt"), b"A")?;
+        test_repo
+            .commander
+            .run_new([root_head.commit_id.as_str()])?;
+        let middle_head = test_repo.commander.get_current_head()?;
+        fs::write(test_repo.directory.path().join("f.txt"), b"B")?;
+        test_repo
+            .commander
+            .run_new([middle_head.commit_id.as_str()])?;
+        let head = test_repo.commander.get_current_head()?;
+
+        let revset = format!(
+            "{}|{}",
+            root_head.commit_id.as_str(),
+            head.commit_id.as_str()
+        );
+        let log = test_repo.commander.get_log(&Some(revset), &[])?;
+
+        let elided = log.elided_lines();
+        assert_eq!(elided.len(), 1, "expected exactly one elided row");
+
+        // The placeholder belongs to the revision printed above it, whose
+        // ancestry it stands in for -- not to the one below.
+        let owner = log
+            .elided_owner(elided[0])
+            .expect("the elided row has an owner");
+        assert_eq!(owner.commit_id, head.commit_id);
+
+        // Rows that merely lack a head are not elided rows.
+        assert!(!log.is_elided_at(0));
 
         Ok(())
     }
