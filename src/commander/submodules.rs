@@ -311,11 +311,25 @@ impl Commander {
     }
 }
 
+/// Path prefix jj gives each side of a conflict when it materializes a
+/// conflicted revision as a git tree.
+///
+/// A conflicted commit is stored with the whole tree repeated once per side —
+/// `.jjconflict-base-0/`, `.jjconflict-side-0/`, `.jjconflict-side-1/`, ... —
+/// *alongside* the real paths. Every submodule therefore appears several extra
+/// times under these prefixes, and since the parent revision has no such paths
+/// each copy reads as a newly added submodule.
+const CONFLICT_SIDE_PREFIX: &str = ".jjconflict-";
+
 /// Pull the gitlink entries out of `git ls-tree -r` output.
 ///
 /// Lines look like `<mode> <type> <object>\t<path>`; a gitlink has type
 /// `commit` and mode `160000`. The path is tab-separated so that paths
 /// containing spaces survive.
+///
+/// Entries under a [CONFLICT_SIDE_PREFIX] directory are skipped: they are jj's
+/// internal per-side copies of the same submodules, not submodules of their
+/// own, and the real paths are present in the same tree.
 fn parse_ls_tree_gitlinks(stdout: &str) -> Vec<SubmodulePointer> {
     stdout
         .lines()
@@ -324,6 +338,9 @@ fn parse_ls_tree_gitlinks(stdout: &str) -> Vec<SubmodulePointer> {
             let mut fields = meta.split_whitespace();
             let _mode = fields.next()?;
             if fields.next()? != "commit" {
+                return None;
+            }
+            if path.starts_with(CONFLICT_SIDE_PREFIX) {
                 return None;
             }
             let object = fields.next()?;
@@ -371,6 +388,36 @@ mod tests {
                 path: "vendor/inner".to_owned(),
                 commit: "cc993a43f8293788a2af5cb19f6642d8282aac0a".to_owned(),
             }]
+        );
+    }
+
+    #[test]
+    fn parse_ls_tree_skips_jj_conflict_side_copies() {
+        // A conflicted revision is stored as a tree carrying the real paths
+        // *plus* one copy per conflict side. Counting the copies reported the
+        // same submodules several times over, each as a fresh addition since
+        // the parent has no such paths.
+        let stdout = "160000 commit a5481aae\t.jjconflict-base-0/ext/aws_sdk_cpp\n\
+             160000 commit 6b04c989\t.jjconflict-base-0/ext/osqp\n\
+             160000 commit a5481aae\t.jjconflict-side-0/ext/aws_sdk_cpp\n\
+             160000 commit 6b04c989\t.jjconflict-side-0/ext/osqp\n\
+             160000 commit a5481aae\t.jjconflict-side-1/ext/aws_sdk_cpp\n\
+             160000 commit 6b04c989\t.jjconflict-side-1/ext/osqp\n\
+             160000 commit a5481aae\text/aws_sdk_cpp\n\
+             160000 commit 6b04c989\text/osqp\n";
+        let links = parse_ls_tree_gitlinks(stdout);
+        assert_eq!(
+            links,
+            vec![
+                SubmodulePointer {
+                    path: "ext/aws_sdk_cpp".to_owned(),
+                    commit: "a5481aae".to_owned(),
+                },
+                SubmodulePointer {
+                    path: "ext/osqp".to_owned(),
+                    commit: "6b04c989".to_owned(),
+                },
+            ]
         );
     }
 

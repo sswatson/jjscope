@@ -81,6 +81,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Details panel: a conflicted revision no longer lists phantom submodule additions with
+  `.jjconflict-base-0/`-style paths. jj stores a conflicted commit as a git tree carrying the
+  real paths *plus* one full copy per conflict side, so `git ls-tree` reported every submodule
+  once per side — in one revision, 27 phantom entries against 4 real ones — and each read as a
+  newly added submodule because the parent has no such paths. Entries under `.jjconflict-*` are
+  now skipped; the real paths in the same tree are what gets compared
 - A jj command that fails now shows its error in a popup instead of exiting the TUI. jj declines
   plenty of things for good reasons and its message usually says what to do instead — `u` on a
   merge operation reports "Cannot undo a merge operation / Consider using `jj op restore`" — but
