@@ -2435,7 +2435,14 @@ impl Component for LogTab<'_> {
             // instead of creating changes, and Esc clears the search. This is
             // context-sensitive: with no active search, these keys behave
             // normally.
-            if self.log_panel.has_active_search() && matches!(self.pick_state, PickState::Idle) {
+            //
+            // n/N apply during a pick gesture too: they only move the cursor,
+            // which is the whole point of searching while choosing a target.
+            // Esc does not — there it means "cancel the gesture", handled by
+            // the pick filter below, so the more destructive reading wins and
+            // a stray Esc cannot leave a half-finished pick running.
+            if self.log_panel.has_active_search() {
+                let searching_idle = matches!(self.pick_state, PickState::Idle);
                 match self.keybinds.match_event(key) {
                     LogTabEvent::CreateNew { no_edit: false } => {
                         self.navigate_search(true);
@@ -2445,7 +2452,7 @@ impl Component for LogTab<'_> {
                         self.navigate_search(false);
                         return Ok(ComponentInputResult::Handled);
                     }
-                    LogTabEvent::Cancel => {
+                    LogTabEvent::Cancel if searching_idle => {
                         self.log_panel.clear_search();
                         return Ok(ComponentInputResult::Handled);
                     }

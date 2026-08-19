@@ -81,6 +81,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Log tab: `n`/`N` navigate search matches during a pick gesture instead of trying to create a
+  change. The search-navigation branch required no gesture to be in progress, so searching while
+  choosing a rebase destination or a diff-edit base — exactly when finding a revision is most
+  useful — fell through to the new-change dialog mid-gesture. `Esc` still cancels the gesture
+  rather than clearing the search, since abandoning a half-finished pick is the more consequential
+  reading
 - Details panel: a conflicted revision no longer lists phantom submodule additions with
   `.jjconflict-base-0/`-style paths. jj stores a conflicted commit as a git tree carrying the
   real paths *plus* one full copy per conflict side, so `git ls-tree` reported every submodule
