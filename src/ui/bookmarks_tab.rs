@@ -376,7 +376,14 @@ impl Component for BookmarksTab<'_> {
                 }
                 NEW_POPUP_ID => {
                     if let Some(BookmarkLine::Parsed { bookmark, .. }) = self.bookmark.as_ref() {
-                        new_commander().run_new([bookmark.to_string().as_str()])?;
+                        // From the confirm-dialog path in `update()`, where an
+                        // `Err` would reach the top level and exit the TUI.
+                        if let Err(err) = new_commander().run_new([bookmark.to_string().as_str()])
+                        {
+                            return Ok(Some(AppAction::SetPopup(Some(Box::new(
+                                MessagePopup::new("New", format!("{err:#}")),
+                            )))));
+                        }
                         let head = new_commander().get_current_head()?;
                         if self.describe_after_new {
                             self.describe_after_new = false;
@@ -1060,7 +1067,16 @@ impl Component for BookmarksTab<'_> {
 
                             // No confirmation: editing into a change is a
                             // frequent, cheap, and undoable action
-                            new_commander().run_edit(&bookmark.to_string(), ignore_immutable)?;
+                            if let Err(err) =
+                                new_commander().run_edit(&bookmark.to_string(), ignore_immutable)
+                            {
+                                return Ok(ComponentInputResult::HandledAction(
+                                    AppAction::SetPopup(Some(Box::new(MessagePopup::new(
+                                        "Edit",
+                                        format!("{err:#}"),
+                                    )))),
+                                ));
+                            }
                             let head = new_commander().get_current_head()?;
                             return Ok(ComponentInputResult::HandledAction(AppAction::ViewLog(
                                 head,

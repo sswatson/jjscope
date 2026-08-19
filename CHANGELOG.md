@@ -81,14 +81,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A jj command that fails now shows its error in a popup instead of exiting the TUI. jj declines
+  plenty of things for good reasons and its message usually says what to do instead — `u` on a
+  merge operation reports "Cannot undo a merge operation / Consider using `jj op restore`" — but
+  the error propagated out of the event loop and took the whole app down with it. Fixed for undo,
+  redo, edit, abandon, absorb, and the bookmarks tab's new and edit; the earlier fix covered `jj
+  new` on the log tab only
+- Log tab: the revset editor (`Ctrl+r`) pre-selects the existing expression, so typing replaces
+  it instead of appending to it. The field opened with the cursor parked at the end and no quick
+  way to clear it, so typing a new revset silently doubled the old one — entering `dev::@` over
+  `dev::@` produced `dev::@dev::@` and a syntax error pointing at a revset the user never wrote.
+  Arrow keys or a click still drop the selection to edit in place
 - Log tab: `=` (diff edit) no longer refuses outright on an empty change. "Empty" means empty
   against the revision's own parents, which is only the no-base case — against an earlier
   ancestor there may well be a diff to edit, and picking that base is the whole point of the
   gesture. The check now happens once the base is known, applies only to the `-r` path, and
   leaves the gesture up so a base can be picked instead of starting over
-- Log tab: a `jj new` that jj rejects — inserting before an immutable commit, say — now shows
-  the error in a popup instead of exiting the TUI. The error propagated out of `update()`,
-  which tears the whole app down; a refused command should just report itself
 - Files tab: conflicted files are listed again for revisions whose conflicted paths are long.
   `jj resolve --list` pads the path column to the longest path but only up to a minimum width,
   so a lone long path is followed by a single space — and the parser required four, silently

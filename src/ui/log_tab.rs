@@ -250,7 +250,14 @@ impl<'a> RevsetEditor<'a> {
                     .map(String::from)
                     .collect(),
             );
+            // Pre-select the existing expression so typing replaces it, the way
+            // an address bar behaves. Replacing the revset is the common case,
+            // and with the cursor merely parked at the end there was no quick
+            // way to clear the field: typing appended, turning `dev::@` into
+            // `dev::@dev::@` and failing to parse. An arrow key or a click
+            // drops the selection and keeps the text for editing in place.
             textarea.move_cursor(CursorMove::End);
+            textarea.select_all();
             textarea
         };
         Self {
@@ -780,6 +787,22 @@ impl<'a> LogTab<'a> {
         )))
     }
 
+    /// Report a jj command's failure in a popup.
+    ///
+    /// jj refuses plenty of things for good reasons — undoing a merge
+    /// operation, editing an immutable commit — and its message usually says
+    /// what to do instead. Propagating the error would take that message out of
+    /// the top level and tear the TUI down with it, which is far too much for a
+    /// command that simply declined to run.
+    fn command_error_popup(
+        title: &'static str,
+        err: impl std::fmt::Display,
+    ) -> ComponentInputResult {
+        ComponentInputResult::HandledAction(AppAction::SetPopup(Some(Box::new(
+            MessagePopup::new(title, format!("{err:#}")),
+        ))))
+    }
+
     /// Pick up change(s) to rebase; the parent set is edited next. For a
     /// single source, its current parents are pre-seeded as marks so that
     /// toggling a mark visibly adds/removes a future parent edge.
@@ -1285,7 +1308,13 @@ impl<'a> LogTab<'a> {
         }
         // Abandon marked commmits
         let commit_id_list = self.log_panel.extract_and_clear_head_marks();
-        new_commander().run_abandon(&commit_id_list)?;
+        // Runs from the confirm-dialog path in `update()`, where an `Err` would
+        // reach the top level and tear the TUI down over a refused command.
+        if let Err(err) = new_commander().run_abandon(&commit_id_list) {
+            return Ok(Some(AppAction::SetPopup(Some(Box::new(
+                MessagePopup::new("Abandon", format!("{err:#}")),
+            )))));
+        }
         // Update selection to latest version, in case abandon triggered a rebase.
         let new_selection = new_commander().get_head_latest(&selection)?;
         // Update log panel and diff panel
@@ -1783,7 +1812,11 @@ impl<'a> LogTab<'a> {
 
                 // No confirmation: with `n` no longer moving @, editing into
                 // a change is a frequent, cheap, and undoable action
-                new_commander().run_edit(self.head.commit_id.as_str(), ignore_immutable)?;
+                if let Err(err) =
+                    new_commander().run_edit(self.head.commit_id.as_str(), ignore_immutable)
+                {
+                    return Ok(Self::command_error_popup("Edit", err));
+                }
                 self.refresh_log_output();
                 return Ok(ComponentInputResult::HandledAction(AppAction::ChangeHead(
                     self.head.clone(),
@@ -1877,7 +1910,10 @@ impl<'a> LogTab<'a> {
                 ));
             }
             LogTabEvent::Absorb => {
-                let outcome = new_commander().run_absorb(self.head.commit_id.as_str())?;
+                let outcome = match new_commander().run_absorb(self.head.commit_id.as_str()) {
+                    Ok(outcome) => outcome,
+                    Err(err) => return Ok(Self::command_error_popup("Absorb", err)),
+                };
 
                 let status_message = if outcome.absorbed.is_empty() {
                     "Nothing to absorb".to_owned()
@@ -1915,7 +1951,12 @@ impl<'a> LogTab<'a> {
                 )));
             }
             LogTabEvent::Undo => {
-                new_commander().run_undo()?;
+                // jj declines some undos outright (a merge operation, say) and
+                // its message names the alternative, so show it rather than
+                // letting the error escape and take the TUI with it.
+                if let Err(err) = new_commander().run_undo() {
+                    return Ok(Self::command_error_popup("Undo", err));
+                }
                 return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
                     vec![
                         AppAction::RefreshTab(),
@@ -1924,7 +1965,9 @@ impl<'a> LogTab<'a> {
                 )));
             }
             LogTabEvent::Redo => {
-                new_commander().run_redo()?;
+                if let Err(err) = new_commander().run_redo() {
+                    return Ok(Self::command_error_popup("Redo", err));
+                }
                 return Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
                     vec![
                         AppAction::RefreshTab(),
