@@ -94,16 +94,26 @@ impl Commander {
         self.get_head(commit_prefix)
     }
 
-    /// Move a change so that it's inserted after and/or before revisions.
-    /// Maps to `jj rebase -r <revision> -A <revision>... -B <revision>...`
-    #[instrument(level = "trace", skip(self, after, before))]
+    /// Move change(s) so that they're inserted after and/or before revisions.
+    /// Maps to `jj rebase -r <revision>|... -A <revision>... -B <revision>...`
+    ///
+    /// Multiple moving revisions are joined into a single `-r` revset with
+    /// `|`, which moves exactly the given set and no more: jj preserves the
+    /// graph edges *within* the set, so a chain keeps its internal order,
+    /// while revisions that merely sit between them are left where they are.
+    #[instrument(level = "trace", skip(self, moving, after, before))]
     pub fn run_rebase_insert(
         &self,
-        revision: &str,
+        moving: &[CommitId],
         after: &[CommitId],
         before: &[CommitId],
     ) -> Result<()> {
-        let mut args = vec!["rebase".to_owned(), "-r".to_owned(), revision.to_owned()];
+        let revset = moving
+            .iter()
+            .map(CommitId::as_str)
+            .collect::<Vec<_>>()
+            .join("|");
+        let mut args = vec!["rebase".to_owned(), "-r".to_owned(), revset];
         for commit_id in after {
             args.push("-A".to_owned());
             args.push(commit_id.as_str().to_owned());
@@ -454,10 +464,15 @@ impl Commander {
             remote: None,
             present: true,
             timestamp: chrono::Utc::now().timestamp(),
+            conflict: false,
         })
     }
 
     /// Create bookmark pointing to commit. Maps to `jj bookmark create <name> -r <revision>`
+    ///
+    /// Callers that want create-or-move semantics should prefer
+    /// [set_bookmark_commit][Self::set_bookmark_commit], which handles both cases.
+    #[allow(dead_code)]
     #[instrument(level = "trace", skip(self))]
     pub fn create_bookmark_commit(
         &self,
@@ -472,6 +487,7 @@ impl Commander {
             remote: None,
             present: true,
             timestamp: chrono::Utc::now().timestamp(),
+            conflict: false,
         })
     }
 
@@ -797,6 +813,65 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
     }
 
     #[test]
+    fn run_rebase_insert_moves_a_chain_in_order() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        // A linear chain a -> b -> c -> d, of which (c, d) is spliced back
+        // in between a and b.
+        let base = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([base.commit_id.as_str()])?;
+        let commit_a = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([commit_a.commit_id.as_str()])?;
+        let commit_b = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([commit_b.commit_id.as_str()])?;
+        let commit_c = test_repo.commander.get_current_head()?;
+        test_repo.commander.run_new([commit_c.commit_id.as_str()])?;
+        let commit_d = test_repo.commander.get_current_head()?;
+
+        test_repo.commander.run_rebase_insert(
+            &[commit_c.commit_id.clone(), commit_d.commit_id.clone()],
+            std::slice::from_ref(&commit_a.commit_id),
+            std::slice::from_ref(&commit_b.commit_id),
+        )?;
+
+        // The moved pair kept its internal order: a -> c -> d -> b
+        let head_for = |change_id| -> Result<Head> {
+            Ok(test_repo
+                .commander
+                .get_change_head(change_id)?
+                .expect("change should still exist"))
+        };
+        let commit_c = head_for(&commit_c.change_id)?;
+        let commit_d = head_for(&commit_d.change_id)?;
+        let commit_b = head_for(&commit_b.change_id)?;
+
+        assert_eq!(
+            test_repo
+                .commander
+                .get_commit_parent(&commit_c.commit_id)?
+                .change_id,
+            commit_a.change_id,
+        );
+        assert_eq!(
+            test_repo
+                .commander
+                .get_commit_parent(&commit_d.commit_id)?
+                .change_id,
+            commit_c.change_id,
+        );
+        // ...and the hole left behind closed up, putting b above the pair
+        assert_eq!(
+            test_repo
+                .commander
+                .get_commit_parent(&commit_b.commit_id)?
+                .change_id,
+            commit_d.change_id,
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn run_new_insert_keeps_working_copy() -> Result<()> {
         let test_repo = TestRepo::new()?;
 
@@ -1045,6 +1120,7 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
                 remote: bookmark.remote,
                 present: bookmark.present,
                 timestamp: bookmarks[0].timestamp,
+                conflict: false,
             }]
         );
 
@@ -1148,6 +1224,7 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
                 remote: bookmark.remote,
                 present: bookmark.present,
                 timestamp: bookmarks[0].timestamp,
+                conflict: false,
             }]
         );
 
@@ -1163,6 +1240,7 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
                 remote: None,
                 present: true,
                 timestamp: bookmarks[0].timestamp,
+                conflict: false,
             }]
         );
 
@@ -1183,6 +1261,7 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
                 remote: bookmark.remote,
                 present: bookmark.present,
                 timestamp: bookmarks[0].timestamp,
+                conflict: false,
             }]
         );
 
@@ -1208,6 +1287,7 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
                 remote: bookmark.remote,
                 present: bookmark.present,
                 timestamp: bookmarks[0].timestamp,
+                conflict: false,
             }]
         );
 

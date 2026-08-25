@@ -1341,7 +1341,10 @@ mod tests {
             parse_conflict_line(
                 "research/mpo/precision_schedule_experiment/run_precision_schedule_sweep.m 2-sided conflict including 1 deletion"
             ),
-            Some("research/mpo/precision_schedule_experiment/run_precision_schedule_sweep.m".to_owned())
+            Some(
+                "research/mpo/precision_schedule_experiment/run_precision_schedule_sweep.m"
+                    .to_owned()
+            )
         );
     }
 

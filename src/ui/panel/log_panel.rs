@@ -18,8 +18,8 @@ use crate::commander::ids::ChangeId;
 use crate::commander::ids::CommitId;
 use crate::commander::log::Head;
 use crate::commander::log::LogOutput;
-use crate::commander::submodules::DirtySubmodule;
 use crate::commander::new_commander;
+use crate::commander::submodules::DirtySubmodule;
 use crate::env::JjConfig;
 use crate::env::get_env;
 use crate::keybinds::LogTabEvent;
@@ -239,7 +239,10 @@ fn append_dirty_submodules_to_title(title: &str, dirty: &[DirtySubmodule]) -> St
             "{title} — submodule {} moved, not recorded in @ ",
             truncate_for_title(&one.path)
         ),
-        many => format!("{title} — {} submodules moved, not recorded in @ ", many.len()),
+        many => format!(
+            "{title} — {} submodules moved, not recorded in @ ",
+            many.len()
+        ),
     }
 }
 
@@ -568,9 +571,7 @@ impl<'a> LogPanel<'a> {
 
         let current = self.current_stop_index(&stops);
         let next = match current {
-            Some(current) => current
-                .saturating_add_signed(scroll)
-                .min(stops.len() - 1),
+            Some(current) => current.saturating_add_signed(scroll).min(stops.len() - 1),
             // Nothing selected yet: enter the list at whichever end the move
             // came from, so a first `k` does not jump to the bottom.
             None if scroll < 0 => stops.len() - 1,
@@ -629,9 +630,7 @@ impl<'a> LogPanel<'a> {
     fn current_stop_index(&self, stops: &[NavigationStop]) -> Option<usize> {
         stops.iter().position(|stop| match stop {
             NavigationStop::Elided { line, .. } => self.elided_selection == Some(*line),
-            NavigationStop::Revision(head) => {
-                self.elided_selection.is_none() && *head == self.head
-            }
+            NavigationStop::Revision(head) => self.elided_selection.is_none() && *head == self.head,
         })
     }
 

@@ -798,9 +798,10 @@ impl<'a> LogTab<'a> {
         title: &'static str,
         err: impl std::fmt::Display,
     ) -> ComponentInputResult {
-        ComponentInputResult::HandledAction(AppAction::SetPopup(Some(Box::new(
-            MessagePopup::new(title, format!("{err:#}")),
-        ))))
+        ComponentInputResult::HandledAction(AppAction::SetPopup(Some(Box::new(MessagePopup::new(
+            title,
+            format!("{err:#}"),
+        )))))
     }
 
     /// Pick up change(s) to rebase; the parent set is edited next. For a
@@ -943,19 +944,25 @@ impl<'a> LogTab<'a> {
     }
 
     /// Move `moving` so it sits between the anchors (`jj rebase -r -A -B`),
-    /// following it with the cursor afterwards.
+    /// following the first moved change with the cursor afterwards.
+    ///
+    /// Several changes move as one set, keeping their order relative to each
+    /// other; the cursor follows the first, matching [Self::execute_rebase].
     fn execute_rebase_insert(
         &mut self,
-        moving: &CommitId,
+        moving: &[CommitId],
         after: &[CommitId],
         before: &[CommitId],
     ) -> Result<ComponentInputResult> {
+        let Some(follow) = moving.first() else {
+            return Ok(ComponentInputResult::Handled);
+        };
         // Resolve before the rebase rewrites the moved change, so the cursor
         // can follow it afterwards
         let landed = new_commander()
-            .get_head(moving.as_str())
+            .get_head(follow.as_str())
             .and_then(|moving_head| {
-                new_commander().run_rebase_insert(moving.as_str(), after, before)?;
+                new_commander().run_rebase_insert(moving, after, before)?;
                 new_commander().get_head_latest(&moving_head)
             });
         match landed {
@@ -1013,13 +1020,16 @@ impl<'a> LogTab<'a> {
         let hint = match &self.pick_state {
             PickState::Idle => None,
             PickState::RebaseDestinations {
+                sources,
                 include_descendants,
                 ..
             } => {
                 let what_moves = if *include_descendants {
-                    "+ descendants"
+                    "+ descendants".to_owned()
+                } else if sources.len() > 1 {
+                    format!("{} changes", sources.len())
                 } else {
-                    "this change"
+                    "this change".to_owned()
                 };
                 // Before-anchors change what Enter will do, so the hint says so
                 // rather than leaving the mode switch invisible.
@@ -1072,21 +1082,13 @@ impl<'a> LogTab<'a> {
                 // apply: in insert mode the after-anchors are an absolute set,
                 // and an empty one is meaningful (insert with only -B).
                 if !self.log_panel.before_marked_heads.is_empty() {
-                    let [moving] = sources.as_slice() else {
-                        return Self::message_popup(
-                            "Rebase",
-                            "Inserting between changes moves a single change. Pick just one, or clear the before-anchors.",
-                        );
-                    };
-                    let moving = moving.clone();
-
                     let before = self.log_panel.extract_and_clear_before_marks();
                     let after = self.log_panel.extract_and_clear_head_marks();
                     self.log_panel.marks_are_parents = false;
                     self.pick_state = PickState::Idle;
                     self.log_panel.title_override = None;
 
-                    return self.execute_rebase_insert(&moving, &after, &before);
+                    return self.execute_rebase_insert(&sources, &after, &before);
                 }
 
                 // The marks are the edited parent set. Don't consume them
@@ -1223,9 +1225,7 @@ impl<'a> LogTab<'a> {
                 // jj would open the editor on nothing. With a base picked, an
                 // "empty" revision can still differ from it, which is exactly
                 // why the check cannot happen before the base is known.
-                if from.is_none()
-                    && new_commander().check_revision_empty(target.as_str())?
-                {
+                if from.is_none() && new_commander().check_revision_empty(target.as_str())? {
                     return Self::message_popup(
                         "Diff edit",
                         "The change is empty against its own parents. Pick another revision to edit against.",
@@ -1542,9 +1542,8 @@ impl<'a> LogTab<'a> {
         };
 
         let owner_id = owner.commit_id.as_str();
-        let expanded = format!(
-            "({current}) | (heads(::{owner_id} ~ {owner_id} & ({current}))::{owner_id})"
-        );
+        let expanded =
+            format!("({current}) | (heads(::{owner_id} ~ {owner_id} & ({current}))::{owner_id})");
 
         self.log_panel.log_revset = Some(expanded);
         // Land on the revision the gap belonged to, so the newly revealed
@@ -2301,7 +2300,6 @@ impl Component for LogTab<'_> {
     }
 
     fn input(&mut self, event: Event) -> Result<ComponentInputResult> {
-
         if let Some(search_textarea) = self.search_textarea.as_mut() {
             if let Event::Key(key) = event {
                 // Enter confirms the search (vim-style); Esc cancels it.

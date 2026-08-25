@@ -378,8 +378,7 @@ impl Component for BookmarksTab<'_> {
                     if let Some(BookmarkLine::Parsed { bookmark, .. }) = self.bookmark.as_ref() {
                         // From the confirm-dialog path in `update()`, where an
                         // `Err` would reach the top level and exit the TUI.
-                        if let Err(err) = new_commander().run_new([bookmark.to_string().as_str()])
-                        {
+                        if let Err(err) = new_commander().run_new([bookmark.to_string().as_str()]) {
                             return Ok(Some(AppAction::SetPopup(Some(Box::new(
                                 MessagePopup::new("New", format!("{err:#}")),
                             )))));
@@ -392,12 +391,10 @@ impl Component for BookmarksTab<'_> {
                             // terminal.
                             return Ok(Some(AppAction::Multiple(vec![
                                 AppAction::ViewLog(head.clone()),
-                                AppAction::RunInteractive(
-                                    Commander::describe_interactive_command(
-                                        head.commit_id.as_str(),
-                                        false,
-                                    ),
-                                ),
+                                AppAction::RunInteractive(Commander::describe_interactive_command(
+                                    head.commit_id.as_str(),
+                                    false,
+                                )),
                             ])));
                         } else {
                             return Ok(Some(AppAction::ViewLog(head)));
@@ -1191,6 +1188,7 @@ mod tests {
                 remote: remote.map(Into::into),
                 present: true,
                 timestamp: 0,
+                conflict: false,
             },
         }
     }

@@ -34,7 +34,11 @@ impl CommitShowKey {
     /// Create a new key. For formats that render the same at any width, the
     /// width is zeroed so one cache entry serves every panel size.
     pub fn new(id: Head, format: DiffFormat, width: usize) -> Self {
-        let width = if format.is_width_sensitive() { width } else { 0 };
+        let width = if format.is_width_sensitive() {
+            width
+        } else {
+            0
+        };
         Self { id, format, width }
     }
 }

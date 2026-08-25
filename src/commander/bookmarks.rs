@@ -28,6 +28,9 @@ pub struct Bookmark {
     pub remote: Option<String>,
     pub present: bool,
     pub timestamp: i64,
+    /// Whether the bookmark has conflicting targets. A conflicted bookmark has
+    /// no single normal target, so it has no meaningful timestamp.
+    pub conflict: bool,
 }
 
 impl Display for Bookmark {
@@ -42,10 +45,10 @@ impl Display for Bookmark {
 }
 
 // Template which outputs `[name@remote]`. Used to parse data from bookmark list
-const BRANCH_TEMPLATE: &str = r#""[" ++ name ++ "@" ++ remote ++ "|" ++ present ++ "|" ++ self.normal_target().committer().timestamp().format("%s") ++ "]""#;
+const BRANCH_TEMPLATE: &str = r#""[" ++ name ++ "@" ++ remote ++ "|" ++ present ++ "|" ++ if(self.conflict(), "conflict", self.normal_target().committer().timestamp().format("%s")) ++ "]""#;
 // Regex to parse bookmark
 static BRANCH_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\[(.*)@(.*)\|(true|false)\|(\d+)\]$").unwrap());
+    LazyLock::new(|| Regex::new(r"^\[(.*)@(.*)\|(true|false)\|(\d+|conflict)\]$").unwrap());
 
 fn parse_bookmark(text: &str) -> Option<Bookmark> {
     let captured = BRANCH_REGEX.captures(text);
@@ -67,6 +70,7 @@ fn parse_bookmark(text: &str) -> Option<Bookmark> {
                 name: name.as_str().to_owned(),
                 present: present.as_str() == "true",
                 timestamp: timestamp.as_str().parse::<i64>().unwrap_or(0),
+                conflict: timestamp.as_str() == "conflict",
             })
         } else {
             None
@@ -250,6 +254,7 @@ mod tests {
                     remote: bookmark.remote.clone(),
                     present: bookmark.present,
                     timestamp: 0,
+                    conflict: false,
                 }),
                 _ => None,
             }),
@@ -258,6 +263,7 @@ mod tests {
                 remote: bookmark.remote.clone(),
                 present: bookmark.present,
                 timestamp: 0,
+                conflict: false,
             })
         );
 
@@ -279,6 +285,7 @@ mod tests {
                     remote: b.remote.clone(),
                     present: b.present,
                     timestamp: 0,
+                    conflict: false,
                 })
                 .collect::<Vec<_>>(),
             [Bookmark {
@@ -286,7 +293,98 @@ mod tests {
                 remote: bookmark.remote,
                 present: bookmark.present,
                 timestamp: 0,
+                conflict: false,
             }]
+        );
+
+        Ok(())
+    }
+
+    /// A conflicted bookmark has no single normal target. The bookmark template
+    /// must not fall back to an unparsable error string for it, or the bookmark
+    /// silently disappears from the list -- leaving no way to select it in the
+    /// bookmark-set picker and resolve the conflict.
+    #[test]
+    fn get_bookmarks_list_includes_conflicted() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let remote_dir = tempfile::TempDir::with_prefix("jjscope-remote")?;
+
+        std::process::Command::new("git")
+            .args(["init", "--bare", "."])
+            .current_dir(remote_dir.path())
+            .output()?;
+        test_repo
+            .commander
+            .jj([
+                "git",
+                "remote",
+                "add",
+                "origin",
+                &remote_dir.path().to_string_lossy(),
+            ])
+            .run_void()?;
+
+        // Publish `test` to the remote.
+        let head = test_repo.commander.get_current_head()?;
+        test_repo
+            .commander
+            .run_describe(head.commit_id.as_str(), "first")?;
+        test_repo.commander.create_bookmark("test")?;
+        let head = test_repo.commander.get_current_head()?;
+        test_repo.commander.git_push(&head.commit_id)?;
+
+        // Move the bookmark on the remote from a separate clone, so the local repo
+        // does not observe the move.
+        let other_dir = tempfile::TempDir::with_prefix("jjscope-other")?;
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        let other_path = other_dir.path().to_string_lossy().to_string();
+        std::process::Command::new("git")
+            .args(["clone", remote_path.as_str(), other_path.as_str()])
+            .output()?;
+
+        // The remote-side commit must descend from `test`, or the push is rejected
+        // as a non-fast-forward and no conflict is created.
+        for args in [
+            vec!["checkout", "test"],
+            vec!["commit", "--allow-empty", "-m", "remote-side"],
+            vec!["push", "origin", "test"],
+        ] {
+            let output = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(other_dir.path())
+                .env("GIT_AUTHOR_NAME", "jjscope")
+                .env("GIT_AUTHOR_EMAIL", "jjscope@example.com")
+                .env("GIT_COMMITTER_NAME", "jjscope")
+                .env("GIT_COMMITTER_EMAIL", "jjscope@example.com")
+                .output()?;
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // Move the local bookmark somewhere else, then fetch to create the conflict.
+        test_repo.commander.jj(["new"]).run_void()?;
+        let local_head = test_repo.commander.get_current_head()?;
+        test_repo
+            .commander
+            .set_bookmark_commit("test", &local_head.commit_id)?;
+        test_repo.commander.jj(["git", "fetch"]).run_void()?;
+
+        let bookmarks = test_repo.commander.get_bookmarks_list(true)?;
+
+        let local = bookmarks
+            .iter()
+            .find(|bookmark| bookmark.name == "test" && bookmark.remote.is_none());
+
+        assert!(
+            local.is_some(),
+            "conflicted local bookmark missing from list: {bookmarks:#?}"
+        );
+        assert!(
+            local.is_some_and(|bookmark| bookmark.conflict),
+            "conflicted bookmark not flagged: {bookmarks:#?}"
         );
 
         Ok(())

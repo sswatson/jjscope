@@ -128,29 +128,16 @@ impl BookmarkSetPopup<'_> {
     }
 
     fn create_bookmark(&self, name: &str) -> Result<()> {
-        if new_commander()
-            .get_bookmarks_list(false)?
-            .iter()
-            .any(|bookmark| bookmark.name == name)
-        {
-            new_commander().set_bookmark_commit(name, &self.commit_id)?;
-        } else {
-            new_commander().create_bookmark_commit(name, &self.commit_id)?;
-        }
+        // `jj bookmark set` creates the bookmark if absent and moves it if present,
+        // so there is no need to check whether it already exists. Checking would
+        // also miss conflicted bookmarks, which are absent from the parsed list.
+        new_commander().set_bookmark_commit(name, &self.commit_id)?;
         Ok(())
     }
     fn generate_bookmark(&self) -> Result<()> {
         if let Some(change_id) = self.change_id.as_ref() {
             let generated_name = generate_name(change_id);
-            if new_commander()
-                .get_bookmarks_list(false)?
-                .iter()
-                .any(|bookmark| bookmark.name == generated_name)
-            {
-                new_commander().set_bookmark_commit(&generated_name, &self.commit_id)?;
-            } else {
-                new_commander().create_bookmark_commit(&generated_name, &self.commit_id)?;
-            }
+            new_commander().set_bookmark_commit(&generated_name, &self.commit_id)?;
             Ok(())
         } else {
             bail!("No change ID");
@@ -214,7 +201,11 @@ impl Component for BookmarkSetPopup<'_> {
                     Text::raw(text).fg(Color::Yellow)
                 }
                 BookmarkSetOption::Bookmark(bookmark) => {
-                    Text::raw(bookmark.to_string()).fg(Color::Magenta)
+                    if bookmark.conflict {
+                        Text::raw(format!("{bookmark} (conflicted)")).fg(Color::Red)
+                    } else {
+                        Text::raw(bookmark.to_string()).fg(Color::Magenta)
+                    }
                 }
                 BookmarkSetOption::Error(err) => err.into_text().unwrap(),
             });

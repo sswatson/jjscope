@@ -453,6 +453,9 @@ mod tests {
     fn parse_gitmodules_ignores_pathspec_like_keys() {
         // `path` must be the whole key: `pathspec = ...` is not a submodule path.
         let contents = "[submodule \"a\"]\n\tpathspec = nope\n\tpath = real/one\n";
-        assert_eq!(parse_gitmodules_paths(contents), vec!["real/one".to_owned()]);
+        assert_eq!(
+            parse_gitmodules_paths(contents),
+            vec!["real/one".to_owned()]
+        );
     }
 }
