@@ -781,6 +781,7 @@ dependencies = [
  "ratatui-textarea",
  "regex",
  "serde",
+ "serde_json",
  "serde_with",
  "shell-words",
  "tempfile",

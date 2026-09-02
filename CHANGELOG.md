@@ -126,6 +126,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Workspaces tab (`5`): a place to notice and clean up stray jj workspaces. Each row shows the
+  facts that decide whether a workspace can go: whether its directory still exists (jj records
+  workspace roots since 0.38 and reports none once the directory is gone), whether its working
+  copy is empty and undescribed or holds work, whether it sits on immutable history, and when jj
+  last ran in that directory (the working-copy commit's own timestamp is misleading: jj bumps it
+  whenever a parent is rewritten). Rows sort most-disposable-first by default; `s` cycles to age
+  or name, `a` narrows to cleanup candidates. `f` forgets the marked (`Space`, or `A` for every
+  listed candidate) or selected workspaces and `D` also deletes their directories, each after a
+  confirmation that says what happens to every commit involved. Both snapshot each workspace
+  first, so forgetting never loses tracked work: jj abandons an empty, undescribed working copy
+  and leaves any other one in the log as an ordinary commit; ignored files are the only thing a
+  deletion can destroy. The current workspace and the one holding the repo store are refused.
+  `U` runs `update-stale`, `u` undoes, `Enter` jumps to the working-copy commit on the log tab,
+  `o` opens the directory in your editor. jj forgets a workspace's root for good when the
+  workspace is forgotten, so an undo would bring it back as a ghost; the tab remembers the roots
+  it has seen and restores one when the directory's own jj state confirms the name
 - Log tab: the `(elided revisions)` row can be cursored onto, and `Enter` there reveals the
   revisions it stands for by widening the log's revset to fill in that one gap. Previously the
   row was skipped by navigation and there was no way to see behind it short of editing the

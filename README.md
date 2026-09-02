@@ -48,6 +48,16 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - Create new change with `n`, edit change with `e`/`E`
   - Browse the whole repo at a bookmark's revision in your editor with `o`
   - Push a single bookmark with `p`
+- Workspaces
+  - See every jj workspace with the facts that decide whether it can go: directory present or
+    missing, working copy empty or holding work, base immutable or not, when jj last ran there
+  - Filter to cleanup candidates with `a`, cycle the sort (state, age, name) with `s`
+  - Mark with `Space` (every listed candidate with `A`), then forget with `f`, or forget and
+    delete the directory with `D`. Each workspace is snapshotted first, so forgetting never loses
+    tracked work: an empty working copy is abandoned, anything else stays in the log as a commit
+  - Bring a stale workspace up to date with `U`, undo with `u`
+  - Show the working-copy commit on the log tab with `Enter`, open the directory in your editor
+    with `o`
 - Command log: View every command jjscope executes
 - Config: Configure jjscope with your jj config
 - Command box: Run jj commands directly in jjscope with `:`

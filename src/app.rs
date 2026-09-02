@@ -30,6 +30,7 @@ use crate::ui::dialog::CommandPopup;
 use crate::ui::files_tab::FilesTab;
 use crate::ui::log_tab::LogTab;
 use crate::ui::tags_tab::TagsTab;
+use crate::ui::workspaces_tab::WorkspacesTab;
 
 #[derive(PartialEq, Copy, Clone)]
 pub enum Tab {
@@ -37,6 +38,7 @@ pub enum Tab {
     Files,
     Bookmarks,
     Tags,
+    Workspaces,
 }
 
 impl fmt::Display for Tab {
@@ -46,12 +48,19 @@ impl fmt::Display for Tab {
             Tab::Files => write!(f, "Files"),
             Tab::Bookmarks => write!(f, "Bookmarks"),
             Tab::Tags => write!(f, "Tags"),
+            Tab::Workspaces => write!(f, "Workspaces"),
         }
     }
 }
 
 impl Tab {
-    pub const VALUES: [Self; 4] = [Tab::Log, Tab::Files, Tab::Bookmarks, Tab::Tags];
+    pub const VALUES: [Self; 5] = [
+        Tab::Log,
+        Tab::Files,
+        Tab::Bookmarks,
+        Tab::Tags,
+        Tab::Workspaces,
+    ];
 }
 
 pub struct Stats {
@@ -64,6 +73,7 @@ pub struct App<'a> {
     pub files: Option<FilesTab>,
     pub bookmarks: Option<BookmarksTab<'a>>,
     pub tags: Option<TagsTab<'a>>,
+    pub workspaces: Option<WorkspacesTab>,
     pub popup: Option<Box<dyn Component>>,
     pub status_message: Option<String>,
     /// An interactive jj command a component asked for. Parked here because
@@ -84,6 +94,7 @@ impl<'a> App<'a> {
             files: None,
             bookmarks: None,
             tags: None,
+            workspaces: None,
             popup: None,
             status_message: None,
             pending_interactive: None,
@@ -161,12 +172,23 @@ impl<'a> App<'a> {
             .ok_or_else(|| anyhow!("Failed to get mutable reference to TagsTab"))
     }
 
+    pub fn get_workspaces_tab(&mut self) -> Result<&mut WorkspacesTab> {
+        if self.workspaces.is_none() {
+            self.workspaces = Some(WorkspacesTab::new()?);
+        }
+
+        self.workspaces
+            .as_mut()
+            .ok_or_else(|| anyhow!("Failed to get mutable reference to WorkspacesTab"))
+    }
+
     pub fn get_or_init_tab(&mut self, tab: Tab) -> Result<&mut dyn Component> {
         Ok(match tab {
             Tab::Log => self.get_log_tab()?,
             Tab::Files => self.get_files_tab()?,
             Tab::Bookmarks => self.get_bookmarks_tab()?,
             Tab::Tags => self.get_tags_tab()?,
+            Tab::Workspaces => self.get_workspaces_tab()?,
         })
     }
 
@@ -188,6 +210,10 @@ impl<'a> App<'a> {
                 .tags
                 .as_mut()
                 .map(|tags_tab| tags_tab as &mut dyn Component),
+            Tab::Workspaces => self
+                .workspaces
+                .as_mut()
+                .map(|workspaces_tab| workspaces_tab as &mut dyn Component),
         }
     }
 
@@ -299,7 +325,7 @@ impl<'a> App<'a> {
             let hint_text = self
                 .status_message
                 .as_deref()
-                .unwrap_or("q: quit | ?: help | R: refresh | 1/2/3/4: change tab");
+                .unwrap_or("q: quit | ?: help | R: refresh | 1-5: change tab");
             let hints = Paragraph::new(hint_text).fg(Color::DarkGray).block(
                 Block::bordered()
                     .title(" jjscope ")

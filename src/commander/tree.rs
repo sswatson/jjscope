@@ -34,6 +34,27 @@ use crate::commander::EditorCommand;
 use crate::commander::log::Head;
 
 impl Commander {
+    /// Locate the main repo's `.jj/repo` directory from this workspace.
+    ///
+    /// In a secondary workspace `.jj/repo` is a file pointing at the main
+    /// repo (relative to the workspace's own `.jj/`); in the main workspace it
+    /// is the repo directory itself.
+    #[instrument(level = "trace", skip(self))]
+    pub(crate) fn resolve_repo_dir(&self) -> Result<PathBuf> {
+        let jj_dir = Path::new(&self.env.root).join(".jj");
+        let repo_pointer = jj_dir.join("repo");
+
+        if repo_pointer.is_dir() {
+            return Ok(repo_pointer);
+        }
+        let target = fs::read_to_string(&repo_pointer)
+            .with_context(|| format!("Reading {}", repo_pointer.display()))?;
+        let target = target.trim();
+        // Relative to `.jj/`, per jj's layout.
+        canonicalize_relative(&jj_dir, target)
+            .with_context(|| format!("Resolving repo pointer {target:?}"))
+    }
+
     /// Locate jj's underlying git object store for this repo.
     ///
     /// The chain, starting from the workspace root:
@@ -48,21 +69,7 @@ impl Commander {
     /// since there is then no object store to archive from.
     #[instrument(level = "trace", skip(self))]
     pub fn resolve_git_dir(&self) -> Result<PathBuf> {
-        let jj_dir = Path::new(&self.env.root).join(".jj");
-        let repo_pointer = jj_dir.join("repo");
-
-        // In a secondary workspace `.jj/repo` is a file pointing at the main
-        // repo; in the main workspace it is the repo directory itself.
-        let repo_dir = if repo_pointer.is_dir() {
-            repo_pointer
-        } else {
-            let target = fs::read_to_string(&repo_pointer)
-                .with_context(|| format!("Reading {}", repo_pointer.display()))?;
-            let target = target.trim();
-            // Relative to `.jj/`, per jj's layout.
-            canonicalize_relative(&jj_dir, target)
-                .with_context(|| format!("Resolving repo pointer {target:?}"))?
-        };
+        let repo_dir = self.resolve_repo_dir()?;
 
         let git_target_file = repo_dir.join("store").join("git_target");
         if !git_target_file.exists() {

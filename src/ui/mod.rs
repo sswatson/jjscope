@@ -9,6 +9,7 @@ pub mod search;
 pub mod styles;
 pub mod tags_tab;
 pub mod utils;
+pub mod workspaces_tab;
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::Event;

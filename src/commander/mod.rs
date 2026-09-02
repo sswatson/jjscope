@@ -30,6 +30,7 @@ pub mod log;
 pub mod submodules;
 pub mod tags;
 pub mod tree;
+pub mod workspaces;
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
