@@ -5,6 +5,7 @@ pub mod files_tab;
 pub mod highlight;
 pub mod log_tab;
 pub mod panel;
+pub mod remotes_tab;
 pub mod search;
 pub mod styles;
 pub mod tags_tab;

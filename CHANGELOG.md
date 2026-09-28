@@ -126,6 +126,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Pushes run as the `gh` account matching the remote's GitHub owner (via `GH_TOKEN` for that one
+  process, no `gh auth switch`), with `jjscope.gh-accounts` mapping owners to logins. The push output says which account
+  (`Pushing as …`). See the README
+- Remotes tab (`6`): the repo's Git remotes with their URLs and how their bookmarks compare to
+  the local ones (bookmarks fetched, how many are tracked, how many are out of sync, and by how
+  many commits; counts jj could only bound show as `10+`). The details panel lists the selected
+  remote's bookmarks with jj's ahead/behind notes. `f` fetches the remote, `F` all remotes, `p`
+  pushes its tracked bookmarks after showing what `--dry-run` says would move. `a` adds a remote,
+  `r` renames one, `e` edits its URL, `d` removes it (after a confirmation that says its remote
+  bookmarks are forgotten locally)
 - Workspaces tab (`5`): a place to notice and clean up stray jj workspaces. Each row shows the
   facts that decide whether a workspace can go: whether its directory still exists (jj records
   workspace roots since 0.38 and reports none once the directory is gone), whether its working

@@ -58,6 +58,12 @@ Built in Rust with Ratatui. Interacts with `jj` CLI.
   - Bring a stale workspace up to date with `U`, undo with `u`
   - Show the working-copy commit on the log tab with `Enter`, open the directory in your editor
     with `o`
+- Remotes
+  - See every Git remote with its URL and how its bookmarks compare to yours: how many are
+    tracked, how many are out of sync, and by how many commits (`↑` to push, `↓` behind)
+  - Fetch the selected remote with `f`, all remotes with `F`
+  - Push a remote's tracked bookmarks with `p`, after a preview of what would move
+  - Add (`a`), rename (`r`), change the URL of (`e`) or remove (`d`) a remote
 - Command log: View every command jjscope executes
 - Config: Configure jjscope with your jj config
 - Command box: Run jj commands directly in jjscope with `:`
@@ -88,9 +94,24 @@ You can optionally configure the following options through your jj config:
   - If `jjscope.bookmark-template` is not set but `templates.git_push_bookmark` is, the latter will be used
 - `jjscope.layout`: Changes the layout of the main and details panel. Can be `horizontal` (default) or `vertical`
 - `jjscope.layout-percent`: Changes the layout split of the main page. Should be number between 0 and 100. Defaults to `50`
+- `jjscope.gh-accounts`: Map a GitHub owner to the `gh` account to push as, e.g.
+  `jj config set --user jjscope.gh-accounts.APrioriInvestments sswatson-ap`. See [Pushing with several `gh` accounts](#pushing-with-several-gh-accounts)
 - `jjscope.description-transforms`: Define keys that rewrite a change's description. See [Description transforms](#description-transforms)
 
 Example: `jj config set --user jjscope.diff-format "color-words"` (for storing in [user config file](https://martinvonz.github.io/jj/latest/config/#user-config-file), repo config is also supported)
+
+### Pushing with several `gh` accounts
+
+Pushes over https authenticate through `gh auth git-credential`, i.e. the active `gh` account.
+jjscope instead runs the push with `GH_TOKEN` set for the right account, so `gh auth switch` is
+never needed and nothing global changes. The account is the one whose login equals the remote's
+GitHub owner (`github.com/alice/repo` pushes as `alice`), unless `jjscope.gh-accounts` maps that
+owner (case-insensitively) to another login. When no account matches, or the remote is ssh, the
+push runs as the active account, as before. The push output starts with a line naming the account
+(`Pushing as sswatson-ap`), and the remotes tab's confirmation shows it too, so a wrong mapping is
+visible. Applies to the log tab's `p`, the bookmarks tab, and
+the remotes tab. A tracked bookmark is pushed as the account for `git.push` (default `origin`),
+not necessarily its own remote.
 
 ### Description transforms
 

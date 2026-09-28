@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 /** The environment configures the application.
 
 It is a combination of
@@ -126,6 +127,7 @@ pub struct JjConfigJjscope {
     layout_percent: u16,
     keybinds: Option<KeybindsConfig>,
     description_transforms: Vec<DescriptionTransform>,
+    gh_accounts: HashMap<String, String>,
 }
 
 impl Default for JjConfigJjscope {
@@ -140,6 +142,7 @@ impl Default for JjConfigJjscope {
             layout: JJLayout::default(),
             keybinds: None,
             description_transforms: Vec::new(),
+            gh_accounts: HashMap::new(),
         }
     }
 }
@@ -227,6 +230,12 @@ impl JjConfig {
 
     pub fn keybinds(&self) -> Option<&KeybindsConfig> {
         self.jjscope.keybinds.as_ref()
+    }
+
+    /// GitHub owner -> `gh` login to push as; see
+    /// [gh_account][crate::commander::gh_account].
+    pub fn gh_accounts(&self) -> &HashMap<String, String> {
+        &self.jjscope.gh_accounts
     }
 
     pub fn description_transforms(&self) -> &[DescriptionTransform] {

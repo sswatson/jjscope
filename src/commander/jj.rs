@@ -562,13 +562,23 @@ impl Commander {
             }
         }
 
-        self.jj(args).color().run()
+        let remote = self.default_push_remote();
+        let identity = self.push_identity(&remote);
+        let output = self.jj(args).running_as(&identity).color().run()?;
+        Ok(identity.with_banner(output))
     }
 
     /// Git push a single named bookmark. Maps to `jj git push -b <name>`
     #[instrument(level = "trace", skip(self))]
     pub fn git_push_bookmark(&self, name: &str) -> Result<String, CommandError> {
-        self.jj(["git", "push", "-b", name]).color().run()
+        let remote = self.default_push_remote();
+        let identity = self.push_identity(&remote);
+        let output = self
+            .jj(["git", "push", "-b", name])
+            .running_as(&identity)
+            .color()
+            .run()?;
+        Ok(identity.with_banner(output))
     }
 
     /// Git fetch. Maps to `jj git fetch`

@@ -24,9 +24,11 @@ invocation with [Commander::jj], which returns a [JjCommand] builder:
 
 pub mod bookmarks;
 pub mod files;
+pub mod gh_account;
 pub mod ids;
 pub mod jj;
 pub mod log;
+pub mod remotes;
 pub mod submodules;
 pub mod tags;
 pub mod tree;
@@ -246,6 +248,12 @@ impl JjCommand<'_> {
     /// messages) is included. Quiet is on by default.
     pub fn verbose(mut self) -> Self {
         self.quiet = false;
+        self
+    }
+
+    /// Run as `identity`'s `gh` account, if it names one. See [gh_account].
+    pub fn running_as(mut self, identity: &gh_account::PushIdentity) -> Self {
+        self.env_var.extend(identity.env());
         self
     }
 
