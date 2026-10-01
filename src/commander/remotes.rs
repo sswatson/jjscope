@@ -19,6 +19,7 @@ use tracing::instrument;
 use crate::commander::CommandError;
 use crate::commander::Commander;
 use crate::commander::RemoveEndLine;
+use crate::commander::gh_account::PushIdentity;
 
 /// A commit count that may only be a lower bound.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -262,22 +263,36 @@ impl Commander {
     /// With `dry_run`, reports what would be pushed without pushing. The
     /// dry run needs no network access: jj compares against the state of the
     /// remote as of the last fetch.
-    #[instrument(level = "trace", skip(self))]
-    pub fn git_push_remote(&self, name: &str, dry_run: bool) -> Result<String, CommandError> {
+    #[instrument(level = "trace", skip(self, identity))]
+    pub fn git_push_remote(
+        &self,
+        name: &str,
+        dry_run: bool,
+        identity: &PushIdentity,
+    ) -> Result<String, CommandError> {
         let mut args = vec!["git", "push", "--remote", name, "--tracked"];
         if dry_run {
             args.push("--dry-run");
         }
         // jj reports what a push did (or would do) on stderr, so keep both.
-        let identity = self.push_identity(name);
         let (stdout, stderr) = self
             .jj(args)
-            .running_as(&identity)
+            .running_as(identity)
             .color()
             .verbose()
             .run_with_stderr()?;
-        Ok(identity.with_banner(format!("{stdout}{stderr}").remove_end_line()))
+        Ok(format!("{stdout}{stderr}").remove_end_line())
     }
+}
+
+/// The bookmarks a push dry run reports it would change, from jj's (uncolored)
+/// `  bookmark: <name> [move forward from ...]` lines.
+pub fn bookmarks_in_push_preview(preview: &str) -> Vec<String> {
+    preview
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("bookmark: "))
+        .filter_map(|rest| rest.rsplit_once(" [").map(|(name, _)| name.to_owned()))
+        .collect()
 }
 
 /// `--remote` takes a string pattern, glob by default; `exact:` makes it a
@@ -307,6 +322,16 @@ mod tests {
 
     use super::*;
     use crate::commander::tests::TestRepo;
+
+    #[test]
+    fn reads_bookmarks_from_push_preview() {
+        let preview = "Changes to push to origin:
+  bookmark: main [move forward from c1d99e305ab3 to ffdbe6a1faa1]
+  bookmark: new-one [add to ffdbe6a1faa1]
+Dry-run requested, not pushing.";
+        assert_eq!(bookmarks_in_push_preview(preview), ["main", "new-one"]);
+        assert!(bookmarks_in_push_preview("Nothing changed.").is_empty());
+    }
 
     #[test]
     fn parses_remote_list() {

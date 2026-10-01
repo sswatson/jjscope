@@ -10,12 +10,14 @@ use std::collections::HashMap;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use itertools::Itertools;
 use tracing::instrument;
 
 use crate::commander::CommandError;
 use crate::commander::Commander;
 use crate::commander::InteractiveCommand;
 use crate::commander::bookmarks::Bookmark;
+use crate::commander::gh_account::PushIdentity;
 use crate::commander::ids::ChangeId;
 use crate::commander::ids::CommitId;
 use crate::commander::log::Head;
@@ -542,43 +544,55 @@ impl Commander {
             .run_void()
     }
 
-    /// Git push. Maps to `jj git push`
-    ///
-    /// When pushing a single revision, bookmarks pointing at it are pushed by name
-    /// (`-b`) rather than by revision (`-r`), since `-r` refuses to create brand-new
-    /// remote bookmarks (jj prints a warning and exits 0, so the push silently does
-    /// nothing). Revisions with no bookmark fall back to `-r <commit_id>`.
+    /// The bookmarks [Self::git_push] sends for `commit_id`: those pointing at
+    /// it. A revision is pushed by its bookmarks' names (`-b`) rather than by
+    /// revision (`-r`), since `-r` refuses to create brand-new remote bookmarks
+    /// (jj prints a warning and exits 0, so the push silently does nothing).
     #[instrument(level = "trace", skip(self))]
-    pub fn git_push(&self, commit_id: &CommitId) -> Result<String, CommandError> {
+    pub fn bookmarks_to_push(&self, commit_id: &CommitId) -> Result<Vec<String>, CommandError> {
+        Ok(self
+            .get_bookmarks_at(commit_id.as_str())?
+            .into_iter()
+            .map(|bookmark| bookmark.name)
+            .unique()
+            .collect())
+    }
+
+    /// Git push a revision. Maps to `jj git push -b <bookmark>...`, or
+    /// `jj git push -r <commit_id>` when `bookmarks` (from
+    /// [Self::bookmarks_to_push]) is empty.
+    #[instrument(level = "trace", skip(self, identity))]
+    pub fn git_push(
+        &self,
+        commit_id: &CommitId,
+        bookmarks: &[String],
+        identity: &PushIdentity,
+    ) -> Result<String, CommandError> {
         let mut args = vec!["git".to_owned(), "push".to_owned()];
-        let bookmarks = self.get_bookmarks_at(commit_id.as_str())?;
         if bookmarks.is_empty() {
             args.push("-r".to_owned());
             args.push(commit_id.as_str().to_owned());
         } else {
             for bookmark in bookmarks {
                 args.push("-b".to_owned());
-                args.push(bookmark.name);
+                args.push(bookmark.clone());
             }
         }
 
-        let remote = self.default_push_remote();
-        let identity = self.push_identity(&remote);
-        let output = self.jj(args).running_as(&identity).color().run()?;
-        Ok(identity.with_banner(output))
+        self.jj(args).running_as(identity).color().run()
     }
 
     /// Git push a single named bookmark. Maps to `jj git push -b <name>`
-    #[instrument(level = "trace", skip(self))]
-    pub fn git_push_bookmark(&self, name: &str) -> Result<String, CommandError> {
-        let remote = self.default_push_remote();
-        let identity = self.push_identity(&remote);
-        let output = self
-            .jj(["git", "push", "-b", name])
-            .running_as(&identity)
+    #[instrument(level = "trace", skip(self, identity))]
+    pub fn git_push_bookmark(
+        &self,
+        name: &str,
+        identity: &PushIdentity,
+    ) -> Result<String, CommandError> {
+        self.jj(["git", "push", "-b", name])
+            .running_as(identity)
             .color()
-            .run()?;
-        Ok(identity.with_banner(output))
+            .run()
     }
 
     /// Git fetch. Maps to `jj git fetch`
@@ -1339,7 +1353,11 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
 
         // A brand-new, never-tracked bookmark must actually be pushed (not silently
         // no-op'd, which is what `jj git push -r <commit>` alone does).
-        test_repo.commander.git_push(&head.commit_id)?;
+        test_repo.commander.git_push(
+            &head.commit_id,
+            &test_repo.commander.bookmarks_to_push(&head.commit_id)?,
+            &PushIdentity::NotApplicable,
+        )?;
 
         let remote_bookmarks = test_repo
             .commander

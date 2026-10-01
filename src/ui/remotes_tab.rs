@@ -28,8 +28,10 @@ use tui_confirm_dialog::ConfirmDialogState;
 use tui_confirm_dialog::Listener;
 
 use crate::commander::CommandError;
+use crate::commander::gh_account::PushIdentity;
 use crate::commander::new_commander;
 use crate::commander::remotes::Remote;
+use crate::commander::remotes::bookmarks_in_push_preview;
 use crate::env::JjConfig;
 use crate::env::get_env;
 use crate::ui::AppAction;
@@ -42,6 +44,7 @@ use crate::ui::panel::DetailsPanel;
 use crate::ui::panel::TextContent;
 use crate::ui::utils::PaneDivider;
 use crate::ui::utils::error_text;
+use crate::ui::utils::summarize_names;
 
 const REMOVE_POPUP_ID: u16 = 1;
 const PUSH_POPUP_ID: u16 = 2;
@@ -50,7 +53,8 @@ const PUSH_POPUP_ID: u16 = 2;
 /// refresh cannot change the target while the dialog is up.
 enum Pending {
     Remove(String),
-    Push(String),
+    /// The remote, the account, and the bookmarks the preview said would move.
+    Push(String, PushIdentity, Vec<String>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -268,7 +272,9 @@ impl RemotesTab<'_> {
         let Some(name) = self.selected_remote().map(|remote| remote.name.clone()) else {
             return ComponentInputResult::Handled;
         };
-        let preview = match new_commander().git_push_remote(&name, true) {
+        let commander = new_commander();
+        let identity = commander.push_identity(&name);
+        let preview = match commander.git_push_remote(&name, true, &identity) {
             Ok(preview) => preview,
             Err(err) => return Self::popup_message("Push", format!("{err}")),
         };
@@ -279,13 +285,27 @@ impl RemotesTab<'_> {
         }
 
         let mut lines = vec![
-            Line::from(format!("Push tracked bookmarks to {name}?")),
+            Line::from(format!(
+                "{}?",
+                identity.label(&format!("Push tracked bookmarks to {name}"))
+            )),
             Line::from(""),
         ];
         // The trailer is jj announcing the dry run, which the dialog makes moot.
-        let preview = preview.replace("Dry-run requested, not pushing.", "");
-        lines.extend(error_text(preview.trim_end()).lines);
-        self.pending = Some(Pending::Push(name));
+        let preview = error_text(
+            preview
+                .replace("Dry-run requested, not pushing.", "")
+                .trim_end(),
+        );
+        let plain = preview
+            .lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let bookmarks = bookmarks_in_push_preview(&plain);
+        lines.extend(preview.lines);
+        self.pending = Some(Pending::Push(name, identity, bookmarks));
         self.open_popup(PUSH_POPUP_ID, " Push ", Text::from(lines));
         ComponentInputResult::Handled
     }
@@ -451,10 +471,17 @@ impl Component for RemotesTab<'_> {
         }
         Ok(match (res.0, pending) {
             (REMOVE_POPUP_ID, Some(Pending::Remove(name))) => self.execute_remove(&name),
-            (PUSH_POPUP_ID, Some(Pending::Push(name))) => {
+            (PUSH_POPUP_ID, Some(Pending::Push(name, identity, bookmarks))) => {
+                let what = if bookmarks.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", summarize_names(&bookmarks))
+                };
+                let label = identity.label(&format!("Pushing{what} to {name}"));
                 let loader = LoaderPopup::new(format!("Pushing to {name}"), move || {
-                    new_commander().git_push_remote(&name, false)
-                });
+                    new_commander().git_push_remote(&name, false, &identity)
+                })
+                .with_label(label);
                 Some(AppAction::SetPopup(Some(Box::new(loader))))
             }
             _ => None,

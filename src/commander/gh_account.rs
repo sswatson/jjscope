@@ -41,23 +41,15 @@ impl PushIdentity {
         }
     }
 
-    /// A line naming the account, to show above the push's output so a wrong
-    /// mapping is noticed.
-    pub fn banner(&self) -> Option<String> {
+    /// `action` (e.g. "Pushing") saying which account it runs as, for the
+    /// loader shown while the push runs, so a wrong mapping is noticed.
+    pub fn label(&self, action: &str) -> String {
         match self {
-            Self::Account { login, .. } => Some(format!("Pushing as {login}")),
-            Self::Active { owner } => Some(format!(
-                "Pushing as the active gh account (no account matches {owner})"
-            )),
-            Self::NotApplicable => None,
-        }
-    }
-
-    /// `output` under the banner, if any.
-    pub fn with_banner(&self, output: String) -> String {
-        match self.banner() {
-            Some(banner) => format!("{banner}\n{output}"),
-            None => output,
+            Self::Account { login, .. } => format!("{action} as {login}"),
+            Self::Active { owner } => {
+                format!("{action} as the active gh account (none matches {owner})")
+            }
+            Self::NotApplicable => action.to_owned(),
         }
     }
 }
@@ -154,26 +146,19 @@ mod tests {
     }
 
     #[test]
-    fn banner_names_the_account() {
+    fn label_names_the_account() {
         let account = PushIdentity::Account {
             login: "me".to_owned(),
             token: "t".to_owned(),
         };
-        assert_eq!(account.with_banner("out".to_owned()), "Pushing as me\nout");
+        assert_eq!(account.label("Pushing"), "Pushing as me");
         assert!(account.env().is_some());
         let active = PushIdentity::Active {
             owner: "o".to_owned(),
         };
-        assert!(
-            active
-                .with_banner("out".to_owned())
-                .starts_with("Pushing as the active")
-        );
+        assert!(active.label("Pushing").starts_with("Pushing as the active"));
         assert!(active.env().is_none());
-        assert_eq!(
-            PushIdentity::NotApplicable.with_banner("out".to_owned()),
-            "out"
-        );
+        assert_eq!(PushIdentity::NotApplicable.label("Pushing"), "Pushing");
     }
 
     #[test]

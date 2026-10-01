@@ -31,7 +31,10 @@ type OperationResult = Result<String, CommandError>;
 
 /// A transient popup to be shown during possibly time consuming actions
 pub struct LoaderPopup {
+    /// Names the operation in the title of the popup showing its result.
     operation_name: String,
+    /// Shown next to the animation while the operation runs.
+    label: String,
     result_rx: Receiver<OperationResult>,
     throbber_state: ThrobberState,
     last_animation_update: Instant,
@@ -54,11 +57,20 @@ impl LoaderPopup {
         });
 
         Self {
+            label: operation_name.clone(),
             operation_name,
             result_rx: rx,
             throbber_state: ThrobberState::default(),
             last_animation_update: Instant::now(),
         }
+    }
+
+    /// Show `label` while the operation runs, instead of the operation name.
+    /// For details (what is being pushed, and as whom) that would make the
+    /// result popup's title unwieldy.
+    pub fn with_label(mut self, label: String) -> Self {
+        self.label = label;
+        self
     }
 }
 
@@ -101,7 +113,7 @@ impl Component for LoaderPopup {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::Green));
 
-        let label = format!("{}...", self.operation_name);
+        let label = format!("{}...", self.label);
         let content_width = 2 + label.len() as u16;
         let content_height = 1;
 

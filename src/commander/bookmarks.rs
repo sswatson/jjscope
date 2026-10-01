@@ -237,6 +237,7 @@ mod tests {
     use insta::assert_debug_snapshot;
 
     use super::*;
+    use crate::commander::gh_account::PushIdentity;
     use crate::commander::tests::TestRepo;
 
     #[test]
@@ -331,7 +332,11 @@ mod tests {
             .run_describe(head.commit_id.as_str(), "first")?;
         test_repo.commander.create_bookmark("test")?;
         let head = test_repo.commander.get_current_head()?;
-        test_repo.commander.git_push(&head.commit_id)?;
+        test_repo.commander.git_push(
+            &head.commit_id,
+            &["test".to_owned()],
+            &PushIdentity::NotApplicable,
+        )?;
 
         // Move the bookmark on the remote from a separate clone, so the local repo
         // does not observe the move.

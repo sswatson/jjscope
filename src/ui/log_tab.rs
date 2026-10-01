@@ -47,6 +47,7 @@ use crate::ui::panel::LargeStringContent;
 use crate::ui::panel::LogPanel;
 use crate::ui::utils::PaneDivider;
 use crate::ui::utils::centered_rect_line_height;
+use crate::ui::utils::summarize_names;
 use crate::ui::utils::tabs_to_spaces;
 
 const NEW_POPUP_ID: u16 = 1;
@@ -2092,10 +2093,21 @@ impl<'a> LogTab<'a> {
             }
             LogTabEvent::Push => {
                 let commit_id = self.head.commit_id.clone();
+                let commander = new_commander();
+                let identity = commander.push_identity(&commander.default_push_remote());
+                let bookmarks = commander.bookmarks_to_push(&commit_id)?;
+                // With no bookmarks, the push is by revision (`-r`), so name that.
+                let what = if bookmarks.is_empty() {
+                    self.head.change_id.as_str().chars().take(8).collect()
+                } else {
+                    summarize_names(&bookmarks)
+                };
+                let label = identity.label(&format!("Pushing {what}"));
 
                 let loader = LoaderPopup::new("Pushing".to_string(), move || {
-                    new_commander().git_push(&commit_id)
-                });
+                    new_commander().git_push(&commit_id, &bookmarks, &identity)
+                })
+                .with_label(label);
 
                 return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
                     Some(Box::new(loader)),

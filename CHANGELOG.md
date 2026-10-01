@@ -127,8 +127,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Pushes run as the `gh` account matching the remote's GitHub owner (via `GH_TOKEN` for that one
-  process, no `gh auth switch`), with `jjscope.gh-accounts` mapping owners to logins. The push output says which account
-  (`Pushing as …`). See the README
+  process, no `gh auth switch`), with `jjscope.gh-accounts` mapping owners to logins. The loader shown while pushing says which
+  account (`Pushing as …`). See the README
 - Remotes tab (`6`): the repo's Git remotes with their URLs and how their bookmarks compare to
   the local ones (bookmarks fetched, how many are tracked, how many are out of sync, and by how
   many commits; counts jj could only bound show as `10+`). The details panel lists the selected

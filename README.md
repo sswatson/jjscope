@@ -107,9 +107,9 @@ jjscope instead runs the push with `GH_TOKEN` set for the right account, so `gh 
 never needed and nothing global changes. The account is the one whose login equals the remote's
 GitHub owner (`github.com/alice/repo` pushes as `alice`), unless `jjscope.gh-accounts` maps that
 owner (case-insensitively) to another login. When no account matches, or the remote is ssh, the
-push runs as the active account, as before. The push output starts with a line naming the account
-(`Pushing as sswatson-ap`), and the remotes tab's confirmation shows it too, so a wrong mapping is
-visible. Applies to the log tab's `p`, the bookmarks tab, and
+push runs as the active account, as before. The loader shown while the push runs names the
+account (`Pushing as sswatson-ap...`), and the remotes tab's confirmation shows it too, so a wrong
+mapping is visible. Applies to the log tab's `p`, the bookmarks tab, and
 the remotes tab. A tracked bookmark is pushed as the account for `git.push` (default `origin`),
 not necessarily its own remote.
 

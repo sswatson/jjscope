@@ -1037,10 +1037,15 @@ impl Component for BookmarksTab<'_> {
                         && bookmark.remote.is_none()
                     {
                         let name = bookmark.name.clone();
+                        let commander = new_commander();
+                        let identity = commander.push_identity(&commander.default_push_remote());
+
+                        let label = identity.label(&format!("Pushing {name}"));
 
                         let loader = LoaderPopup::new("Pushing".to_string(), move || {
-                            new_commander().git_push_bookmark(&name)
-                        });
+                            new_commander().git_push_bookmark(&name, &identity)
+                        })
+                        .with_label(label);
 
                         return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
                             Some(Box::new(loader)),

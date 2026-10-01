@@ -341,6 +341,43 @@ pub fn error_text(message: &str) -> Text<'static> {
     }
 }
 
+/// How many names [summarize_names] lists before collapsing the rest.
+const SUMMARIZED_NAMES: usize = 3;
+
+/// `names` joined for a one-line label, the first few in full and the rest
+/// as a count (`a, b, c +2 more`), so a long list cannot widen the line
+/// without bound.
+pub fn summarize_names(names: &[String]) -> String {
+    let shown = names[..names.len().min(SUMMARIZED_NAMES)].join(", ");
+    match names.len().saturating_sub(SUMMARIZED_NAMES) {
+        0 => shown,
+        rest => format!("{shown} +{rest} more"),
+    }
+}
+
+#[cfg(test)]
+mod summarize_names_tests {
+    use super::*;
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|&name| name.to_owned()).collect()
+    }
+
+    #[test]
+    fn lists_a_few_names_in_full() {
+        assert_eq!(summarize_names(&names(&["main"])), "main");
+        assert_eq!(summarize_names(&names(&["a", "b", "c"])), "a, b, c");
+    }
+
+    #[test]
+    fn collapses_the_rest_into_a_count() {
+        assert_eq!(
+            summarize_names(&names(&["a", "b", "c", "d", "e"])),
+            "a, b, c +2 more"
+        );
+    }
+}
+
 #[cfg(test)]
 mod error_text_tests {
     use super::*;
