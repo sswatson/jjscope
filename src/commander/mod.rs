@@ -342,6 +342,17 @@ impl JjCommand<'_> {
         Ok((String::from_utf8(stdout)?, String::from_utf8(stderr)?))
     }
 
+    /// Execute the command and return its standard output followed by its
+    /// standard error. Under `--quiet` (the default) jj's standard error holds
+    /// only warnings, so this is empty when all went well, and otherwise shows
+    /// warnings about a command that succeeded without doing what was asked
+    /// (`jj git push -r` on a revision with no bookmarks pushes nothing and
+    /// exits 0).
+    pub fn run_with_warnings(self) -> Result<String, CommandError> {
+        let (stdout, stderr) = self.run_with_stderr()?;
+        Ok(format!("{stdout}{stderr}"))
+    }
+
     /// Configure and run the command, returning the captured standard output
     /// and standard error.
     ///

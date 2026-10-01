@@ -81,6 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pushing a revision with no bookmarks from the log tab (`p`) showed nothing, as if it had
+  worked; jj pushes nothing there and exits 0. Its warning (`No bookmarks/tags point to the
+  specified revisions`) now appears in a popup. The bookmarks tab's push shows jj's warnings too
 - Log tab: `n`/`N` navigate search matches during a pick gesture instead of trying to create a
   change. The search-navigation branch required no gesture to be in progress, so searching while
   choosing a rebase destination or a diff-edit base — exactly when finding a revision is most

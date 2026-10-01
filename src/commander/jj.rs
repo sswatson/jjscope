@@ -579,7 +579,10 @@ impl Commander {
             }
         }
 
-        self.jj(args).running_as(identity).color().run()
+        self.jj(args)
+            .running_as(identity)
+            .color()
+            .run_with_warnings()
     }
 
     /// Git push a single named bookmark. Maps to `jj git push -b <name>`
@@ -592,7 +595,7 @@ impl Commander {
         self.jj(["git", "push", "-b", name])
             .running_as(identity)
             .color()
-            .run()
+            .run_with_warnings()
     }
 
     /// Git fetch. Maps to `jj git fetch`
@@ -1371,6 +1374,40 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
             ])
             .run()?;
         assert_eq!(remote_bookmarks.trim(), head.commit_id.as_str());
+
+        Ok(())
+    }
+
+    #[test]
+    fn git_push_without_bookmarks_reports_the_warning() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let remote_dir = tempfile::TempDir::with_prefix("jjscope-remote")?;
+        std::process::Command::new("git")
+            .args(["init", "--bare", "."])
+            .current_dir(remote_dir.path())
+            .output()?;
+        test_repo
+            .commander
+            .jj([
+                "git",
+                "remote",
+                "add",
+                "origin",
+                &remote_dir.path().to_string_lossy(),
+            ])
+            .run_void()?;
+        let head = test_repo.commander.get_current_head()?;
+
+        // jj pushes nothing here and still exits 0, so its warning is all that
+        // says the push did not happen.
+        let output =
+            test_repo
+                .commander
+                .git_push(&head.commit_id, &[], &PushIdentity::NotApplicable)?;
+        assert!(
+            output.contains("No bookmarks/tags point to the specified revisions"),
+            "{output:?}"
+        );
 
         Ok(())
     }
