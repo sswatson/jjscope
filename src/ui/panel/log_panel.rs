@@ -2,6 +2,7 @@
 log tab. */
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use ansi_to_tui::IntoText;
 use anyhow::Result;
@@ -10,7 +11,6 @@ use ratatui::crossterm::event::MouseEvent;
 use ratatui::crossterm::event::MouseEventKind;
 use ratatui::layout::Rect;
 use ratatui::prelude::*;
-use ratatui::text::ToText;
 use ratatui::widgets::*;
 
 use crate::commander::CommandError;
@@ -57,8 +57,15 @@ pub struct LogPanel<'a> {
     /// Output from 'jj log' converted to Ratatui Text
     log_output_text: Text<'a>,
 
-    /// Scroll offset and cursor position
-    log_list_state: ListState,
+    /// Everything the cursor can land on, in display order. Derived from
+    /// [Self::log_output] whenever it changes, so moving the cursor does not
+    /// walk the whole log.
+    navigation_stops: Vec<NavigationStop>,
+
+    /// Index of the first log line shown. Kept here rather than in a
+    /// [ListState] because only the visible lines are handed to the [List]
+    /// widget (see [Self::draw]), so its own offset is always 0.
+    log_offset: usize,
 
     /// Area were log content was drawn. This excludes the border.
     pub log_rect: Rect,
@@ -297,47 +304,22 @@ pub enum LogPanelEvent {
 }
 */
 
-fn get_head_index(head: &Head, log_output: &Result<LogOutput, CommandError>) -> Option<usize> {
-    match log_output {
-        Ok(log_output) => log_output
-            .heads
-            .iter()
-            .position(|heads| heads == head)
-            .or_else(|| {
-                log_output
-                    .heads
-                    .iter()
-                    .position(|commit| commit.change_id == head.change_id)
-            }),
-        Err(_) => None,
-    }
-}
-
 impl<'a> LogPanel<'a> {
     pub fn new() -> Result<Self> {
         let log_revset = new_commander().env.default_revset.clone();
         let log_output = new_commander().get_log(&log_revset, &[]);
         let head = new_commander().get_current_head()?;
 
-        let log_list_state = ListState::default().with_selected(get_head_index(&head, &log_output));
-
         let mut keybinds = LogTabKeybinds::default();
         if let Some(keybinds_config) = new_commander().env.jj_config.keybinds() {
             keybinds.extend_from_config(keybinds_config);
         }
 
-        let log_output_text = match log_output.as_ref() {
-            Ok(log_output) => log_output
-                .graph
-                .into_text()
-                .unwrap_or(Text::from("Could not turn text into TUI text (coloring)")),
-            Err(_) => Text::default(),
-        };
-
-        Ok(Self {
-            log_output_text,
-            log_output,
-            log_list_state,
+        let mut log_panel = Self {
+            log_output_text: Text::default(),
+            log_output: Ok(LogOutput::default()),
+            navigation_stops: Vec::new(),
+            log_offset: 0,
             log_rect: Rect::ZERO,
 
             log_revset,
@@ -357,7 +339,9 @@ impl<'a> LogPanel<'a> {
             panel_rect: Rect::ZERO,
 
             config: get_env().jj_config.clone(),
-        })
+        };
+        log_panel.set_log_output(log_output);
+        Ok(log_panel)
     }
 
     //
@@ -390,14 +374,7 @@ impl<'a> LogPanel<'a> {
             (NODE_REBASED, rebased_ids.as_slice()),
         ];
 
-        self.log_output = new_commander().get_log(&self.log_revset, &node_overrides);
-        self.log_output_text = match self.log_output.as_ref() {
-            Ok(log_output) => log_output
-                .graph
-                .into_text()
-                .unwrap_or(Text::from("Could not turn text into TUI text (coloring)")),
-            Err(_) => Text::default(),
-        };
+        self.set_log_output(new_commander().get_log(&self.log_revset, &node_overrides));
 
         // Re-run the highlight revset on every refresh rather than caching it.
         // Keying by change ID keeps the set valid across the commit-ID rewrites
@@ -406,6 +383,22 @@ impl<'a> LogPanel<'a> {
         // legitimately picks a different set afterwards. Refetching is one extra
         // `jj log` on a path that already runs two.
         self.refresh_highlight();
+    }
+
+    /// Store a fresh `jj log` result along with everything derived from it.
+    fn set_log_output(&mut self, log_output: Result<LogOutput, CommandError>) {
+        self.log_output_text = match log_output.as_ref() {
+            Ok(log_output) => log_output
+                .graph
+                .into_text()
+                .unwrap_or(Text::from("Could not turn text into TUI text (coloring)")),
+            Err(_) => Text::default(),
+        };
+        self.navigation_stops = match log_output.as_ref() {
+            Ok(log_output) => navigation_stops(log_output),
+            Err(_) => Vec::new(),
+        };
+        self.log_output = log_output;
     }
 
     /// Re-run the active highlight revset, if any, and store the result.
@@ -435,12 +428,17 @@ impl<'a> LogPanel<'a> {
     /// The highlight set is the exception: it *does* get a gutter column, because
     /// unlike a mark it has to be readable at the same time as the node glyph,
     /// `@`, and the selection -- a glyph swap can only show one thing at a time.
-    fn output_to_lines(&self, log_output: &LogOutput) -> Vec<Line<'a>> {
+    ///
+    /// Only the lines in `range` are built: restyling the whole log on every
+    /// draw would make each keypress cost time proportional to its length.
+    fn output_to_lines(&self, log_output: &LogOutput, range: Range<usize>) -> Vec<Line<'a>> {
         let highlighting = self.highlight.is_active();
 
         self.log_output_text
             .iter()
             .enumerate()
+            .skip(range.start)
+            .take(range.len())
             .map(|(i, line)| {
                 let mut line = line.to_owned();
 
@@ -484,11 +482,26 @@ impl<'a> LogPanel<'a> {
             .collect()
     }
 
-    /// Get lines to show in log list
-    fn log_lines(&self) -> Vec<Line<'a>> {
+    /// Get the lines in `range` to show in log list
+    fn log_lines(&self, range: Range<usize>) -> Vec<Line<'a>> {
         match self.log_output.as_ref() {
-            Ok(log_output) => self.output_to_lines(log_output),
-            Err(err) => err.into_text("Error getting log").unwrap().lines,
+            Ok(log_output) => self.output_to_lines(log_output, range),
+            Err(err) => {
+                let lines = err.into_text("Error getting log").unwrap().lines;
+                lines
+                    .into_iter()
+                    .skip(range.start)
+                    .take(range.len())
+                    .collect()
+            }
+        }
+    }
+
+    /// Total number of lines [Self::log_lines] can produce.
+    fn log_length(&self) -> usize {
+        match self.log_output.as_ref() {
+            Ok(_) => self.log_output_text.lines.len(),
+            Err(err) => err.into_text("Error getting log").unwrap().lines.len(),
         }
     }
 
@@ -564,12 +577,12 @@ impl<'a> LogPanel<'a> {
     /// The scroll is relative to head-index, not line-index.
     /// This will update self.head
     fn scroll_relative(&mut self, scroll: isize) {
-        let stops = self.navigation_stops();
+        let stops = &self.navigation_stops;
         if stops.is_empty() {
             return;
         }
 
-        let current = self.current_stop_index(&stops);
+        let current = self.current_stop_index(stops);
         let next = match current {
             Some(current) => current.saturating_add_signed(scroll).min(stops.len() - 1),
             // Nothing selected yet: enter the list at whichever end the move
@@ -592,38 +605,6 @@ impl<'a> LogPanel<'a> {
             }
         }
         // TODO Notify about change of head
-    }
-
-    /// Everything the cursor can land on, in display order: each revision, plus
-    /// each "(elided revisions)" row.
-    fn navigation_stops(&self) -> Vec<NavigationStop> {
-        let Ok(log_output) = self.log_output.as_ref() else {
-            return Vec::new();
-        };
-
-        let mut stops: Vec<NavigationStop> = Vec::new();
-        let mut seen: Option<&Head> = None;
-        for line in 0..log_output.graph.lines().count() {
-            if log_output.is_elided_at(line) {
-                // Attributed to the revision above, which is the one whose
-                // ancestry the placeholder stands in for.
-                if let Some(owner) = log_output.elided_owner(line) {
-                    stops.push(NavigationStop::Elided {
-                        line,
-                        owner: owner.clone(),
-                    });
-                }
-                continue;
-            }
-            // A revision spans two graph lines; take it once, on the first.
-            if let Some(head) = log_output.head_at(line)
-                && seen != Some(head)
-            {
-                stops.push(NavigationStop::Revision(head.clone()));
-                seen = Some(head);
-            }
-        }
-        stops
     }
 
     /// Where the cursor currently sits in [Self::navigation_stops].
@@ -953,19 +934,32 @@ impl Component for LogPanel<'_> {
             title = append_dirty_submodules_to_title(&title, &self.dirty_submodules);
         }
 
-        let log_lines = self.log_lines();
-        let log_length: usize = log_lines.len();
+        let log_length = self.log_length();
         let log_block = Block::bordered()
             .title(title)
             .border_type(BorderType::Rounded);
         self.log_rect = log_block.inner(area);
-        self.log_list_state.select(self.selected_log_line());
-        let log = List::new(log_lines).block(log_block).scroll_padding(7);
-        f.render_stateful_widget(log, area, &mut self.log_list_state);
+        let height = usize::from(self.log_rect.height);
+        let selected = self.selected_log_line();
+        self.log_offset = scroll_offset(
+            self.log_offset,
+            selected,
+            height,
+            log_length,
+            LOG_SCROLL_PADDING,
+        );
+
+        // Only the lines on screen are built and handed to the list, which
+        // therefore never scrolls itself: the window is already positioned.
+        let window = self.log_offset..(self.log_offset + height).min(log_length);
+        let mut log_list_state = ListState::default()
+            .with_selected(selected.and_then(|line| line.checked_sub(self.log_offset)));
+        let log = List::new(self.log_lines(window)).block(log_block);
+        f.render_stateful_widget(log, area, &mut log_list_state);
 
         // Show scrollbar if lines don't fit the screen height
-        if log_length > self.log_rect.height.into() {
-            let index = self.log_list_state.selected().unwrap_or(0);
+        if log_length > height {
+            let index = selected.unwrap_or(0);
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
             let mut scrollbar_state = ScrollbarState::default()
                 .content_length(log_length)
@@ -1003,20 +997,11 @@ impl Component for LogPanel<'_> {
                     return Ok(ComponentInputResult::Handled);
                 }
                 MouseEventKind::Up(_) => {
-                    // Check all items in list
-
-                    // TODO make a function that constructs the log list
-                    let log_lines = self.log_lines();
-                    let log_items: Vec<ListItem> = log_lines
-                        .iter()
-                        .map(|line| ListItem::from(line.to_text()))
-                        .collect();
-
                     // Select the clicked change
                     if let Some(inx) = list_item_from_mouse_event(
-                        &log_items,
+                        self.log_length(),
                         self.log_rect,
-                        &self.log_list_state,
+                        self.log_offset,
                         &mouse_event,
                     ) && let Some(head) = self.head_at_log_line(inx)
                     {
@@ -1032,11 +1017,71 @@ impl Component for LogPanel<'_> {
     }
 }
 
+/// Everything the cursor can land on, in display order: each revision, plus
+/// each "(elided revisions)" row.
+fn navigation_stops(log_output: &LogOutput) -> Vec<NavigationStop> {
+    let mut stops: Vec<NavigationStop> = Vec::new();
+    let mut seen: Option<&Head> = None;
+    for line in 0..log_output.line_count() {
+        if log_output.is_elided_at(line) {
+            // Attributed to the revision above, which is the one whose
+            // ancestry the placeholder stands in for.
+            if let Some(owner) = log_output.elided_owner(line) {
+                stops.push(NavigationStop::Elided {
+                    line,
+                    owner: owner.clone(),
+                });
+            }
+            continue;
+        }
+        // A revision spans two graph lines; take it once, on the first.
+        if let Some(head) = log_output.head_at(line)
+            && seen != Some(head)
+        {
+            stops.push(NavigationStop::Revision(head.clone()));
+            seen = Some(head);
+        }
+    }
+    stops
+}
+
+/// Lines kept visible above and below the selection when scrolling the log.
+const LOG_SCROLL_PADDING: usize = 7;
+
+/// The first line to show so that `selected` stays on screen with `padding`
+/// lines of context around it, moving `offset` as little as possible.
+///
+/// Mirrors what ratatui's [List] does with `scroll_padding`, which the log
+/// cannot use directly since it only ever gives the list the visible lines.
+fn scroll_offset(
+    offset: usize,
+    selected: Option<usize>,
+    height: usize,
+    length: usize,
+    padding: usize,
+) -> usize {
+    if height == 0 {
+        return 0;
+    }
+    // Padding that would not leave room for the selection itself is shrunk,
+    // as ratatui does, or the window would oscillate.
+    let padding = padding.min(height.saturating_sub(1) / 2);
+    let mut offset = offset;
+    if let Some(selected) = selected {
+        if selected < offset + padding {
+            offset = selected.saturating_sub(padding);
+        } else if selected + padding >= offset + height {
+            offset = selected + padding + 1 - height;
+        }
+    }
+    offset.min(length.saturating_sub(height))
+}
+
 // Determine which list item a mouse event is related to
 fn list_item_from_mouse_event(
-    list: &[ListItem],
+    list_length: usize,
     list_rect: Rect,
-    list_state: &ListState,
+    list_offset: usize,
     mouse_event: &MouseEvent,
 ) -> Option<usize> {
     let mouse_pos = Position::new(mouse_event.column, mouse_event.row);
@@ -1047,8 +1092,8 @@ fn list_item_from_mouse_event(
     // Assume that each item is exactly one line.
     // This is not true in the general case, but it is in this module.
     let mouse_offset = mouse_pos.y - list_rect.y;
-    let item_index = list_state.offset() + mouse_offset as usize;
-    if item_index >= list.len() {
+    let item_index = list_offset + mouse_offset as usize;
+    if item_index >= list_length {
         return None;
     }
     Some(item_index)
@@ -1132,6 +1177,43 @@ mod tests {
         let bar = line.spans.first().expect("gutter span");
         assert_eq!(bar.content.as_ref(), GUTTER_MARK);
         assert_eq!(bar.style.fg, Some(GUTTER_COLOR));
+    }
+
+    #[test]
+    fn scroll_offset_holds_still_while_the_selection_is_comfortably_on_screen() {
+        assert_eq!(scroll_offset(10, Some(20), 20, 100, 7), 10);
+    }
+
+    #[test]
+    fn scroll_offset_keeps_padding_below_the_selection() {
+        // Line 23 is within 7 of the bottom of 10..30, so the window follows it.
+        assert_eq!(scroll_offset(10, Some(23), 20, 100, 7), 11);
+    }
+
+    #[test]
+    fn scroll_offset_keeps_padding_above_the_selection() {
+        assert_eq!(scroll_offset(10, Some(15), 20, 100, 7), 8);
+        assert_eq!(scroll_offset(10, Some(3), 20, 100, 7), 0);
+    }
+
+    #[test]
+    fn scroll_offset_never_scrolls_past_the_end() {
+        assert_eq!(scroll_offset(0, Some(99), 20, 100, 7), 80);
+        assert_eq!(scroll_offset(50, None, 20, 30, 7), 10);
+        assert_eq!(scroll_offset(5, Some(2), 20, 10, 7), 0);
+    }
+
+    #[test]
+    fn scroll_offset_jumps_to_a_far_selection() {
+        assert_eq!(scroll_offset(0, Some(5000), 20, 10_000, 7), 4988);
+        assert_eq!(scroll_offset(4988, Some(0), 20, 10_000, 7), 0);
+    }
+
+    #[test]
+    fn scroll_offset_shrinks_padding_on_a_short_screen() {
+        // With 5 rows the padding drops to 2, so the selection can sit mid-screen.
+        assert_eq!(scroll_offset(0, Some(4), 5, 100, 7), 2);
+        assert_eq!(scroll_offset(0, Some(0), 0, 100, 7), 0);
     }
 
     #[test]

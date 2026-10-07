@@ -34,12 +34,16 @@ pub struct Head {
     pub immutable: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LogOutput {
     pub graph: String,
     // Maps graph line -> heads
     pub graph_heads: Vec<Option<Head>>,
     pub heads: Vec<Head>,
+    // Maps graph line -> whether it is an "(elided revisions)" row. Computed
+    // once up front: callers query it for every line of the log, and finding
+    // line `n` in `graph` means rescanning it from the start.
+    elided: Vec<bool>,
 }
 
 /// The text jj puts on the graph row standing in for revisions the revset
@@ -47,8 +51,27 @@ pub struct LogOutput {
 const ELIDED_MARKER: &str = "(elided revisions)";
 
 impl LogOutput {
+    fn new(graph: String, graph_heads: Vec<Option<Head>>) -> Self {
+        let heads = graph_heads.iter().flatten().cloned().unique().collect();
+        let elided = graph
+            .lines()
+            .map(|text| text.contains(ELIDED_MARKER))
+            .collect();
+        Self {
+            graph,
+            graph_heads,
+            heads,
+            elided,
+        }
+    }
+
     pub fn head_at(&self, line: usize) -> Option<&Head> {
         self.graph_heads.get(line).and_then(Option::as_ref)
+    }
+
+    /// Number of lines in [Self::graph].
+    pub fn line_count(&self) -> usize {
+        self.elided.len()
     }
 
     /// Whether `line` is jj's synthetic "(elided revisions)" row.
@@ -58,13 +81,7 @@ impl LogOutput {
     /// `├─╯`, the trailing `~`), and only this one stands for revisions that
     /// could be revealed.
     pub fn is_elided_at(&self, line: usize) -> bool {
-        self.graph_line(line)
-            .is_some_and(|text| text.contains(ELIDED_MARKER))
-    }
-
-    /// The raw text of graph line `line`, ANSI escapes and all.
-    fn graph_line(&self, line: usize) -> Option<&str> {
-        self.graph.lines().nth(line)
+        self.elided.get(line).copied().unwrap_or(false)
     }
 
     /// The revision an elided row belongs to: the nearest head *above* it.
@@ -83,7 +100,7 @@ impl LogOutput {
     /// Every line index holding an "(elided revisions)" row.
     #[cfg(test)]
     pub fn elided_lines(&self) -> Vec<usize> {
-        (0..self.graph.lines().count())
+        (0..self.line_count())
             .filter(|line| self.is_elided_at(*line))
             .collect()
     }
@@ -277,13 +294,7 @@ impl Commander {
             .map(|line| parse_head(line).ok())
             .collect();
 
-        let heads = graph_heads.clone().into_iter().flatten().unique().collect();
-
-        Ok(LogOutput {
-            graph,
-            graph_heads,
-            heads,
-        })
+        Ok(LogOutput::new(graph, graph_heads))
     }
 
     /// The change IDs of every revision selected by `revset`.
