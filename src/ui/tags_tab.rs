@@ -5,7 +5,7 @@
 //!
 //! Deliberately smaller than the bookmarks tab: tags are set from the log tab
 //! (where you can see which revision you are tagging), so this tab covers
-//! browsing, deleting, and the remote tracking that jj 0.44 added.
+//! browsing, deleting, pushing, and the remote tracking that jj 0.44 added.
 
 use ansi_to_tui::IntoText;
 use anyhow::Result;
@@ -33,6 +33,7 @@ use crate::ui::AppAction;
 use crate::ui::Component;
 use crate::ui::ComponentInputResult;
 use crate::ui::dialog::HelpPopup;
+use crate::ui::dialog::LoaderPopup;
 use crate::ui::dialog::MessagePopup;
 use crate::ui::panel::DetailsPanel;
 use crate::ui::panel::TextContent;
@@ -346,6 +347,29 @@ impl TagsTab<'_> {
         }
     }
 
+    /// Push the selected local tag to the default push remote.
+    fn push(&self) -> ComponentInputResult {
+        let Some(tag) = self.selected_tag() else {
+            return ComponentInputResult::Handled;
+        };
+        if tag.remote.is_some() {
+            return ComponentInputResult::HandledAction(AppAction::SetPopup(Some(Box::new(
+                MessagePopup::new("Push tag", "Only local tags can be pushed."),
+            ))));
+        }
+
+        let name = tag.name.clone();
+        let commander = new_commander();
+        let identity = commander.push_identity(&commander.default_push_remote());
+        let label = identity.label(&format!("Pushing tag {name}"));
+
+        let loader = LoaderPopup::new("Pushing".to_string(), move || {
+            new_commander().git_push_tag(&name, &identity)
+        })
+        .with_label(label);
+        ComponentInputResult::HandledAction(AppAction::SetPopup(Some(Box::new(loader))))
+    }
+
     /// Start or stop tracking the selected remote tag.
     fn set_tracking(&mut self, track: bool) -> ComponentInputResult {
         let Some(tag) = self.selected_tag() else {
@@ -617,6 +641,7 @@ impl Component for TagsTab<'_> {
                 self.refresh_tag();
             }
             KeyCode::Char('d') => return Ok(self.confirm_delete()),
+            KeyCode::Char('p') => return Ok(self.push()),
             KeyCode::Char('m') => return Ok(self.start_prompt(PromptKind::Move)),
             KeyCode::Char('r') => return Ok(self.start_prompt(PromptKind::Rename)),
             KeyCode::Char('t') => return Ok(self.set_tracking(true)),
@@ -666,6 +691,10 @@ impl Component for TagsTab<'_> {
                                 "r".to_owned(),
                                 "rename the selected tag (jj has no rename: set + delete)"
                                     .to_owned(),
+                            ),
+                            (
+                                "p".to_owned(),
+                                "push the selected local tag to the remote".to_owned(),
                             ),
                             (
                                 "t".to_owned(),

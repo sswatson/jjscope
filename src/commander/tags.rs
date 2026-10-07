@@ -20,6 +20,7 @@ use tracing::instrument;
 use crate::commander::CommandError;
 use crate::commander::Commander;
 use crate::commander::RemoveEndLine;
+use crate::commander::gh_account::PushIdentity;
 use crate::env::DiffFormat;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -230,6 +231,23 @@ impl Commander {
     pub fn untrack_tag(&self, remote_ref: &str) -> Result<String, CommandError> {
         self.jj(["tag", "untrack", remote_ref]).color().run()
     }
+
+    /// Git push a single local tag, tracking it on the remote if it is new.
+    /// Maps to `jj git push -t exact:<name>`
+    ///
+    /// `exact:` stops jj from reading the name as a glob, so a tag whose name
+    /// contains `*` or `?` cannot push other tags along with it.
+    #[instrument(level = "trace", skip(self, identity))]
+    pub fn git_push_tag(
+        &self,
+        name: &str,
+        identity: &PushIdentity,
+    ) -> Result<String, CommandError> {
+        self.jj(["git", "push", "-t", &format!("exact:{name}")])
+            .running_as(identity)
+            .color()
+            .run_with_warnings()
+    }
 }
 
 #[cfg(test)]
@@ -287,6 +305,57 @@ mod tests {
 
         test_repo.commander.delete_tag("v1.0")?;
         assert!(test_repo.commander.get_tags_list(false)?.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn push_tag_creates_and_tracks_remote_tag() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+        let remote_dir = tempfile::TempDir::with_prefix("jjscope-remote")?;
+        std::process::Command::new("git")
+            .args(["init", "--bare", "."])
+            .current_dir(remote_dir.path())
+            .output()?;
+        test_repo
+            .commander
+            .jj([
+                "git",
+                "remote",
+                "add",
+                "origin",
+                &remote_dir.path().to_string_lossy(),
+            ])
+            .run_void()?;
+
+        let head = test_repo.commander.get_current_head()?;
+        test_repo
+            .commander
+            .run_describe(head.commit_id.as_str(), "first")?;
+        let head = test_repo.commander.get_current_head()?;
+        let rev = head.commit_id.as_str();
+        test_repo.commander.set_tag("v1.0", rev, false)?;
+        // Matches `v1.*` as a glob; must not be pushed alongside `v1.0`.
+        test_repo.commander.set_tag("v1.1", rev, false)?;
+
+        test_repo
+            .commander
+            .git_push_tag("v1.0", &PushIdentity::NotApplicable)?;
+
+        let remote_tags = std::process::Command::new("git")
+            .args(["tag", "--list"])
+            .current_dir(remote_dir.path())
+            .output()?;
+        assert_eq!(String::from_utf8_lossy(&remote_tags.stdout).trim(), "v1.0");
+
+        let tags = test_repo.commander.get_tags_list(true)?;
+        let pushed = tags
+            .iter()
+            .find(|tag| tag.name == "v1.0" && tag.remote.as_deref() == Some("origin"));
+        assert!(
+            pushed.is_some_and(|tag| tag.tracked),
+            "expected a tracked v1.0@origin, got {tags:?}"
+        );
 
         Ok(())
     }
