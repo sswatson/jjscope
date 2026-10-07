@@ -363,6 +363,11 @@ See all key mappings for the current tab with `?`.
   changes relative to any ancestor, not just the parent. The configured diff editor opens on
   the chosen diff; deselected hunks are dropped from the change and its descendants (undo
   with `u`)
+  - On an immutable change (someone else's branch, trunk) `=` opens read-only, for reviewing
+    in your diff editor: anything you edit or save is discarded when the editor exits, so the
+    change is never rewritten and jj records no operation. This works with any external diff
+    editor (it is wrapped to restore the directory jj reads back), but not with the built-in
+    `:builtin` editor, which runs inside jj
   - On a merge, a base is not the same as no base: `--from` against one parent shows the
     *other* parent's changes as part of the diff, so deselecting them would revert that
     branch's work rather than drop this change's. Use `Enter` with the cursor left in place

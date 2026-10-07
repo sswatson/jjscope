@@ -214,6 +214,9 @@ fn run_interactive_command(
     terminal.clear()?;
 
     let message = match status {
+        Ok(status) if status.success() && command.read_only => {
+            format!("{} finished (read-only, nothing changed)", command.name)
+        }
         Ok(status) if status.success() => format!("{} finished | u: undo", command.name),
         Ok(status) => match status.code() {
             Some(code) => format!("{} aborted (exit {code})", command.name),

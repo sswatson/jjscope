@@ -129,6 +129,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Log tab: `=` (diff edit) on an immutable change opens it read-only instead of refusing, so
+  someone else's changes can be reviewed in the diff editor. Edits are discarded when the editor
+  exits (the editor is wrapped to restore what jj reads back), so the change is never rewritten.
+  Not available with the built-in diff editor
 - Pushes run as the `gh` account matching the remote's GitHub owner (via `GH_TOKEN` for that one
   process, no `gh auth switch`), with `jjscope.gh-accounts` mapping owners to logins. The loader shown while pushing says which
   account (`Pushing as …`). See the README

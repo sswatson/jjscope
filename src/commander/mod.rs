@@ -275,7 +275,6 @@ impl JjCommand<'_> {
     /// output goes straight to the user's terminal.
     pub fn run_interactive(self) -> Result<std::process::ExitStatus, CommandError> {
         let mut command = Command::new(&self.commander.env.jj_bin);
-        command.args(&self.args);
         // No --quiet and no --color override: jj's messages print to the
         // real terminal in their interactive form. --no-pager still applies —
         // a pager would fight the editor for the tty.
@@ -286,6 +285,11 @@ impl JjCommand<'_> {
                 command.args(["--config", cfg]);
             }
         }
+        // The command's own args go last so a `--config` among them wins
+        // over the session-wide ones above. A read-only diffedit depends on
+        // this: its wrapped diff editor must not be overridden by a
+        // `ui.diff-editor` passed to jjscope.
+        command.args(&self.args);
 
         command.current_dir(&self.commander.env.root);
         command.envs(self.env_var.iter().cloned());
@@ -435,11 +439,15 @@ impl RemoveEndLine for String {
 /// Built by [Commander] methods, carried through the UI as an
 /// [crate::ui::AppAction], and executed by the main loop via
 /// [JjCommand::run_interactive].
+#[derive(Debug)]
 pub struct InteractiveCommand {
     /// Arguments to the jj binary.
     pub args: Vec<String>,
     /// Name for status messages, e.g. "Interactive squash".
     pub name: String,
+    /// The command cannot change the repo (see
+    /// [Commander::read_only_diffedit]), so there is nothing to undo.
+    pub read_only: bool,
 }
 
 /// A request to open a file in the user's editor with the real terminal

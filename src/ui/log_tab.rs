@@ -103,7 +103,9 @@ enum PickState {
     /// parents (`jj diffedit -r target`). Marking a revision, or moving the
     /// cursor off `target`, edits relative to that revision instead
     /// (`jj diffedit --from <base> --to target`).
-    DiffEditFrom { target: CommitId },
+    /// `read_only` is set when the target is immutable: it opens for review
+    /// with edits discarded (see [Commander::read_only_diffedit]).
+    DiffEditFrom { target: CommitId, read_only: bool },
 }
 
 /// Draw a one-line prompt bar over the bottom border row of `panel_area`, with
@@ -926,20 +928,21 @@ impl<'a> LogTab<'a> {
     /// marking a revision, edits against that base instead. Diffedit operates
     /// on a single revision, so the picked-up target is always the change
     /// under the cursor, not a mark set.
+    ///
+    /// An immutable change is not refused: it opens read-only instead (see
+    /// [Commander::read_only_diffedit]), which is how someone else's change
+    /// gets reviewed in the diff editor.
     fn start_diffedit(&mut self) -> Result<ComponentInputResult> {
-        if self.head.immutable {
-            return Self::message_popup(
-                "Diff edit",
-                "The change cannot be edited because it is immutable.",
-            );
-        }
         // Deliberately *not* checking emptiness here. "Empty" means empty
         // against this revision's own parents, which is only the `-r` case; the
         // whole point of the gesture is that a different base can be picked,
         // and against that base an "empty" revision may well have a diff. The
         // check happens once the base is known (see [Self::advance_pick]).
         let target = self.head.commit_id.clone();
-        self.pick_state = PickState::DiffEditFrom { target };
+        self.pick_state = PickState::DiffEditFrom {
+            target,
+            read_only: self.head.immutable,
+        };
         self.update_pick_title();
         Ok(ComponentInputResult::Handled)
     }
@@ -1059,10 +1062,16 @@ impl<'a> LogTab<'a> {
                     " Squash [{what_moves}] (s: switch): pick destination (enter: confirm, esc: cancel) "
                 ))
             }
-            PickState::DiffEditFrom { .. } => Some(
-                " Diff edit: enter: this revision's own diff, or pick a base to edit against (esc: cancel) "
-                    .to_owned(),
-            ),
+            PickState::DiffEditFrom { read_only, .. } => {
+                let verb = if *read_only {
+                    "Diff review (immutable, read-only)"
+                } else {
+                    "Diff edit"
+                };
+                Some(format!(
+                    " {verb}: enter: this revision's own diff, or pick a base to edit against (esc: cancel) "
+                ))
+            }
         };
         self.log_panel.title_override = hint;
     }
@@ -1199,7 +1208,7 @@ impl<'a> LogTab<'a> {
                     ],
                 )))
             }
-            PickState::DiffEditFrom { target } => {
+            PickState::DiffEditFrom { target, read_only } => {
                 // The base is the marked revision, or the change under the
                 // cursor if none are marked. Landing on the target itself means
                 // "just edit this revision", i.e. `-r` with no base: a revision
@@ -1240,12 +1249,27 @@ impl<'a> LogTab<'a> {
                 // refresh follows it through the rewrite
                 let target_head = new_commander().get_head(target.as_str())?;
                 self.set_head(target_head);
-                let command = match from {
+                let mut command = match from {
                     Some(from) => {
                         Commander::diffedit_from_interactive_command(from.as_str(), target.as_str())
                     }
                     None => Commander::diffedit_interactive_command(target.as_str()),
                 };
+                // Edits to an immutable change would rewrite shared history;
+                // open it for review instead, discarding whatever is edited
+                if read_only {
+                    command = match new_commander().read_only_diffedit(command) {
+                        Ok(command) => command,
+                        Err(err) => {
+                            return Ok(ComponentInputResult::HandledAction(AppAction::SetPopup(
+                                Some(Box::new(MessagePopup::new(
+                                    "Diff review",
+                                    format!("{err:#}"),
+                                ))),
+                            )));
+                        }
+                    };
+                }
                 Ok(ComponentInputResult::HandledAction(AppAction::Multiple(
                     vec![
                         AppAction::ChangeHead(self.head.clone()),

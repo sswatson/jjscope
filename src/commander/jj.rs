@@ -32,6 +32,60 @@ pub struct AbsorbOutcome {
     pub rebased: Vec<Head>,
 }
 
+/// The `sh` wrapper behind [Commander::read_only_diffedit]. Its first
+/// argument is the directory jj reads the edit back from; the rest is the
+/// diff editor's command line. It snapshots that directory, runs the editor,
+/// then puts the snapshot back, so jj sees exactly the content it wrote out.
+///
+/// Fails closed: if the snapshot or the restore fails it exits non-zero, and
+/// jj aborts the diffedit rather than applying a half-restored directory.
+const READ_ONLY_DIFF_EDITOR_SCRIPT: &str = r#"out=$1; shift
+snap=$(mktemp -d) || exit 1
+cp -a "$out/." "$snap/" || { rm -rf "$snap"; exit 1; }
+"$@"; status=$?
+find "$out" -mindepth 1 -delete && cp -a "$snap/." "$out/" || status=1
+rm -rf "$snap"
+exit $status"#;
+
+/// The `ui.diff-editor` override that wraps `editor` (an argv with jj's
+/// placeholders, see [Commander::diff_editor_argv]) in
+/// [READ_ONLY_DIFF_EDITOR_SCRIPT], as a `--config` argument.
+///
+/// jj reads the edit back from `$output` if the editor's arguments mention
+/// it, and otherwise from `$right`, which the editor then edits in place; that
+/// is the directory to protect.
+fn read_only_diff_editor_config(editor: &[String]) -> String {
+    let protected = if editor.iter().any(|arg| arg.contains("$output")) {
+        "$output"
+    } else {
+        "$right"
+    };
+    let mut argv = vec![
+        "sh".to_owned(),
+        "-c".to_owned(),
+        READ_ONLY_DIFF_EDITOR_SCRIPT.to_owned(),
+        // $0 for the script, which only shows up in sh's error messages
+        "jjscope-review".to_owned(),
+        protected.to_owned(),
+    ];
+    argv.extend(editor.iter().cloned());
+    let value = toml::Value::Array(argv.into_iter().map(toml::Value::String).collect());
+    format!("ui.diff-editor={value}")
+}
+
+/// A TOML array of strings, as found in jj's command-valued config.
+fn string_array(value: &toml::Value) -> Result<Vec<String>> {
+    value
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .ok_or_else(|| anyhow!("Expected an array of strings, found {value}"))
+}
+
 /// Parse the commit ID prefix out of `jj new --no-edit`'s
 /// `Created new commit <change_id> <commit_id> ...` stderr message.
 fn parse_created_commit(stderr: &str) -> Option<&str> {
@@ -251,6 +305,7 @@ impl Commander {
         InteractiveCommand {
             args,
             name: "Interactive squash".to_owned(),
+            read_only: false,
         }
     }
 
@@ -265,6 +320,7 @@ impl Commander {
         InteractiveCommand {
             args: vec!["split".to_owned(), "-r".to_owned(), revision.to_owned()],
             name: "Interactive split".to_owned(),
+            read_only: false,
         }
     }
 
@@ -287,6 +343,7 @@ impl Commander {
         InteractiveCommand {
             args,
             name: "Describe".to_owned(),
+            read_only: false,
         }
     }
 
@@ -307,6 +364,7 @@ impl Commander {
         InteractiveCommand {
             args: vec!["diffedit".to_owned(), "-r".to_owned(), revision.to_owned()],
             name: "Interactive diff edit".to_owned(),
+            read_only: false,
         }
     }
 
@@ -334,7 +392,116 @@ impl Commander {
                 to.to_owned(),
             ],
             name: "Interactive diff edit".to_owned(),
+            read_only: false,
         }
+    }
+
+    /// Turn a diffedit invocation into a read-only review, for an immutable
+    /// revision someone else owns: the diff editor opens as usual, but
+    /// whatever it writes is discarded before jj reads the result back, so
+    /// jj reports "Nothing changed" and creates no operation.
+    ///
+    /// The diff editor is swapped for a wrapper (see
+    /// [READ_ONLY_DIFF_EDITOR_SCRIPT]) that snapshots the directory jj reads
+    /// back and restores it once the editor exits. `--ignore-immutable` is
+    /// still needed because jj refuses the revision before it launches the
+    /// editor; nothing is rewritten because the output never changes.
+    ///
+    /// Fails for the built-in diff editor, which runs inside jj and so
+    /// cannot be wrapped.
+    pub fn read_only_diffedit(&self, command: InteractiveCommand) -> Result<InteractiveCommand> {
+        let editor = self.diff_editor_argv()?;
+        let mut args = command.args;
+        args.extend([
+            "--ignore-immutable".to_owned(),
+            "--config".to_owned(),
+            read_only_diff_editor_config(&editor),
+        ]);
+        Ok(InteractiveCommand {
+            args,
+            name: "Diff review".to_owned(),
+            read_only: true,
+        })
+    }
+
+    /// The configured diff editor as jj will invoke it for `jj diffedit`:
+    /// the program followed by its edit arguments, still holding jj's
+    /// `$left`/`$right`/`$output` placeholders.
+    ///
+    /// Mirrors jj's resolution of `ui.diff-editor`: an array is the command
+    /// itself; a single word names a `merge-tools.<name>` entry (its
+    /// `program`, defaulting to the name, and `edit-args`) or else a bare
+    /// program; a string with spaces is a command line. A command with no
+    /// arguments gets jj's default edit-args, `$left $right`.
+    fn diff_editor_argv(&self) -> Result<Vec<String>> {
+        const DEFAULT_EDIT_ARGS: [&str; 2] = ["$left", "$right"];
+        let with_default_args = |mut argv: Vec<String>| {
+            if argv.len() == 1 {
+                argv.extend(DEFAULT_EDIT_ARGS.map(str::to_owned));
+            }
+            argv
+        };
+
+        let listed = self.config_table("ui.diff-editor")?;
+        let value = listed
+            .get("ui")
+            .and_then(|ui| ui.get("diff-editor"))
+            .ok_or_else(|| anyhow!("No diff editor is configured (ui.diff-editor)"))?;
+        let argv = match value {
+            toml::Value::String(command) if command.starts_with(':') => {
+                return Err(anyhow!(
+                    "The built-in diff editor ({command}) runs inside jj, so it cannot be opened read-only. \
+                     Set ui.diff-editor to an external tool to review immutable changes."
+                ));
+            }
+            toml::Value::String(command) => {
+                let words = shell_words::split(command)
+                    .with_context(|| format!("Could not parse ui.diff-editor: {command}"))?;
+                match words.as_slice() {
+                    [] => return Err(anyhow!("ui.diff-editor is empty")),
+                    [name] => {
+                        let tools = self.config_table(&format!("merge-tools.{name}"))?;
+                        match tools.get("merge-tools").and_then(|tools| tools.get(name)) {
+                            Some(tool) => {
+                                let program = tool
+                                    .get("program")
+                                    .and_then(toml::Value::as_str)
+                                    .unwrap_or(name);
+                                let mut argv = vec![program.to_owned()];
+                                match tool.get("edit-args") {
+                                    Some(edit_args) => argv.extend(string_array(edit_args)?),
+                                    None => argv.extend(DEFAULT_EDIT_ARGS.map(str::to_owned)),
+                                }
+                                argv
+                            }
+                            None => with_default_args(words),
+                        }
+                    }
+                    _ => words,
+                }
+            }
+            toml::Value::Array(_) => with_default_args(string_array(value)?),
+            other => {
+                return Err(anyhow!(
+                    "Unsupported ui.diff-editor value for a read-only review: {other}"
+                ));
+            }
+        };
+        if argv.is_empty() {
+            return Err(anyhow!("ui.diff-editor is empty"));
+        }
+        Ok(argv)
+    }
+
+    /// `jj config list --include-defaults <name>`, parsed. Its `a.b = value`
+    /// lines are valid TOML and parse into nested tables.
+    fn config_table(&self, name: &str) -> Result<toml::Table> {
+        let listed = self
+            .jj(["config", "list", "--include-defaults", name])
+            .run()?;
+        listed
+            .parse()
+            .with_context(|| format!("Could not parse jj config for {name}"))
     }
 
     /// Remove redundant parent edges (parents that are also indirect
@@ -1430,6 +1597,94 @@ Working copy  (@) now at: oymkkrtq 8e05ce0c (empty) wc
         // as `--from <parent> --to <rev>`, which differs for merges.
         let command = Commander::diffedit_interactive_command("targetcommit");
         assert_eq!(command.args, vec!["diffedit", "-r", "targetcommit"]);
+    }
+
+    /// A read-only diffedit of an immutable revision opens the diff editor,
+    /// lets it scribble on the files, and leaves the revision untouched:
+    /// no rewrite, no new operation. Covered for both editor styles, one
+    /// writing to `$output` and one editing `$right` in place.
+    #[test]
+    fn read_only_diffedit_discards_edits() -> Result<()> {
+        for (output_dir, edit_args) in [
+            ("$3", r#"["$left", "$right", "$output"]"#),
+            ("$2", r#"["$left", "$right"]"#),
+        ] {
+            let mut test_repo = TestRepo::new()?;
+            let dir = test_repo.directory.path();
+            fs::write(dir.join("f.txt"), b"original\n")?;
+            test_repo.commander.run_new(["@"])?;
+            let reviewed = test_repo.commander.get_head("@-")?;
+
+            // An "editor" that rewrites a file and adds another, as a stray
+            // save in a real diff editor would
+            let script = dir.join("scribble.sh");
+            fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\necho edited > \"{output_dir}/f.txt\"\necho new > \"{output_dir}/g.txt\"\n"
+                ),
+            )?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+            }
+            let config = test_repo.commander.jj_config_toml.get_or_insert_default();
+            config.push(format!(
+                r#"merge-tools.scribble.program="{}""#,
+                script.display()
+            ));
+            config.push(format!("merge-tools.scribble.edit-args={edit_args}"));
+            config.push(r#"ui.diff-editor="scribble""#.to_owned());
+            config.push(format!(
+                r#"revset-aliases."immutable_heads()"="{}""#,
+                reviewed.commit_id.as_str()
+            ));
+
+            let op_before = test_repo
+                .commander
+                .jj(["op", "log", "-n1", "--no-graph", "-T", "id"])
+                .run()?;
+            let command =
+                test_repo
+                    .commander
+                    .read_only_diffedit(Commander::diffedit_interactive_command(
+                        reviewed.commit_id.as_str(),
+                    ))?;
+            let status = test_repo.commander.jj(&command.args).run_interactive()?;
+            assert!(status.success(), "{edit_args}: {status}");
+
+            let op_after = test_repo
+                .commander
+                .jj(["op", "log", "-n1", "--no-graph", "-T", "id"])
+                .run()?;
+            assert_eq!(
+                op_before, op_after,
+                "{edit_args}: diffedit created an operation"
+            );
+            let content = test_repo
+                .commander
+                .jj(["file", "show", "-r", reviewed.commit_id.as_str(), "f.txt"])
+                .run()?;
+            assert_eq!(content, "original\n", "{edit_args}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn read_only_diffedit_refuses_builtin_editor() -> Result<()> {
+        let mut test_repo = TestRepo::new()?;
+        test_repo
+            .commander
+            .jj_config_toml
+            .get_or_insert_default()
+            .push(r#"ui.diff-editor=":builtin""#.to_owned());
+        let err = test_repo
+            .commander
+            .read_only_diffedit(Commander::diffedit_interactive_command("@"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("built-in"), "{err:#}");
+        Ok(())
     }
 
     /// A merge's own diff (`-r`) contains only what the merge itself changed,

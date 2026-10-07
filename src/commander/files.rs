@@ -363,6 +363,7 @@ impl Commander {
         InteractiveCommand {
             args,
             name: "Interactive resolve".to_owned(),
+            read_only: false,
         }
     }
 
