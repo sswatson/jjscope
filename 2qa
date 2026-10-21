@@ -1,0 +1,8 @@
+fix performance issue
+
+JJ: Change ID: nwwxmuxu
+JJ: This commit contains the following changes:
+JJ:     M src/commander/log.rs
+JJ:     M src/ui/log_tab.rs
+JJ:
+JJ: Lines starting with "JJ:" (like this one) will be removed.

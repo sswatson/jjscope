@@ -189,6 +189,10 @@ fn short_commit(commit: &str) -> &str {
 /// Width of a revset field's label column, e.g. `" Show:"` plus its trailing space.
 const REVSET_FIELD_LABEL_WIDTH: u16 = 7;
 
+/// Most changed files a revision can have and still get `--stat`. Past this,
+/// the details panel falls back to `--summary` (see `affordable_diff_format`).
+const STAT_FILE_LIMIT: usize = 50;
+
 /// Draw one row of the revset editor: a label, then the field's input beside it.
 ///
 /// The focused field's label is brightened, since a [TextArea] gives no cursor of
@@ -570,12 +574,18 @@ impl<'a> LogTab<'a> {
         let commit_id = &head.commit_id;
         let mut commander = new_commander();
         commander.limit_width(inner_width);
+        // The cache key keeps the requested format: the cache looks entries up
+        // by the format asked for, so storing the substituted one would miss.
+        let (shown_format, note) = Self::affordable_diff_format(&commander, commit_id, diff_format);
         let head_output = commander
-            .get_commit_show(commit_id, diff_format, true)
+            .get_commit_show(commit_id, &shown_format, true)
             .map(|text| tabs_to_spaces(&text));
         // Format output as string
         let mut output = match head_output {
-            Ok(head_output) => head_output,
+            Ok(head_output) => match note {
+                Some(note) => format!("{note}\n\n{head_output}"),
+                None => head_output,
+            },
             Err(err) => err.to_string(),
         };
 
@@ -588,6 +598,31 @@ impl<'a> LogTab<'a> {
         // Build value used by cache and return it
         let key = CommitShowKey::new(head.clone(), diff_format.clone(), inner_width);
         CommitShowValue::new(key, output)
+    }
+
+    /// Swap `--stat` for `--summary` on revisions that change many files.
+    ///
+    /// `--stat` reads and diffs every changed file, so a commit that adds
+    /// hundreds of large binaries can block the UI for seconds. The file count
+    /// comes from `--summary`, which is cheap, and the note says what was
+    /// swapped and why.
+    fn affordable_diff_format(
+        commander: &Commander,
+        commit_id: &CommitId,
+        diff_format: &DiffFormat,
+    ) -> (DiffFormat, Option<String>) {
+        if *diff_format != DiffFormat::Stat {
+            return (diff_format.clone(), None);
+        }
+        match commander.get_changed_file_count(commit_id) {
+            Ok(count) if count > STAT_FILE_LIMIT => (
+                DiffFormat::Summary,
+                Some(format!(
+                    "--stat skipped: {count} files changed (more than {STAT_FILE_LIMIT}), showing --summary"
+                )),
+            ),
+            _ => (diff_format.clone(), None),
+        }
     }
 
     /// Render the submodule pointer changes this revision makes, if any, as a

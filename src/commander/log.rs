@@ -347,6 +347,23 @@ impl Commander {
         Ok(self.jj(args).color().run_lossy()?.remove_end_line())
     }
 
+    /// How many files a commit changes. Cheap even for huge commits, since
+    /// `--summary` never reads file contents the way `--stat` does.
+    /// Maps to `jj diff -r <commit> --summary --ignore-working-copy`
+    #[instrument(level = "trace", skip(self))]
+    pub fn get_changed_file_count(&self, commit_id: &CommitId) -> Result<usize, CommandError> {
+        let summary = self
+            .jj([
+                "diff",
+                "-r",
+                commit_id.as_str(),
+                "--summary",
+                "--ignore-working-copy",
+            ])
+            .run_lossy()?;
+        Ok(summary.lines().count())
+    }
+
     /// Get the current head.
     /// Maps to `jj log -r @`
     #[instrument(level = "trace", skip(self))]
@@ -733,6 +750,24 @@ mod tests {
 
         assert_eq!(new_head, test_repo.commander.get_head_latest(&old_head)?);
 
+        Ok(())
+    }
+
+    #[test]
+    fn get_changed_file_count() -> Result<()> {
+        let test_repo = TestRepo::new()?;
+
+        for name in ["a", "b", "c"] {
+            fs::write(test_repo.directory.path().join(name), name.as_bytes())?;
+        }
+
+        let head = test_repo.commander.get_current_head()?;
+        assert_eq!(
+            test_repo
+                .commander
+                .get_changed_file_count(&head.commit_id)?,
+            3
+        );
         Ok(())
     }
 
