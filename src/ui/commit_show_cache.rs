@@ -167,25 +167,4 @@ impl CommitShowCache {
         }
         self.commit_document.insert(key.clone(), value);
     }
-
-    /// If key is cached, return a reference to that value,
-    /// otherwise generate the value,
-    /// insert it, and return a reference to the new inserted value.
-    /// This works around current rustc limitations on lifetime.
-    /// NOTE: fn_value must return a CommitShowValue that has the same key
-    /// as the one provided.
-    pub fn get_or_insert<T>(&mut self, key: &CommitShowKey, fn_value: T) -> &CommitShowValue
-    where
-        T: FnOnce() -> CommitShowValue,
-    {
-        // To fool the conservative borrow checker, we must first determine
-        // which code path to follow - and not getting any borrowed value back.
-        if !self.has_exact_match(key) {
-            let value = fn_value();
-            self.insert_document(value);
-            // Assuming that the value has the exact same key as key
-            // we are now guaranteed success on self.get(key) and may unwrap
-        }
-        self.get(key).unwrap()
-    }
 }

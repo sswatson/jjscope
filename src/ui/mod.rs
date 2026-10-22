@@ -1,3 +1,4 @@
+pub mod background;
 pub mod bookmarks_tab;
 pub mod commit_show_cache;
 pub mod dialog;
@@ -67,6 +68,11 @@ impl ComponentInputResult {
     }
 }
 pub trait Component {
+    /// Request periodic updates while background reads are outstanding.
+    fn has_pending_work(&self) -> bool {
+        false
+    }
+
     // Called when switching to tab
     fn focus(&mut self) -> Result<()> {
         Ok(())

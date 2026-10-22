@@ -271,7 +271,12 @@ fn input_to_app(app: &mut App) -> Result<bool> {
     const FOREVER: Duration = Duration::from_secs(24 * 3600);
 
     // Allow popups like the fetch animation to update every 100ms.
-    let wait_duration = if app.popup.is_some() {
+    let wait_duration = if app
+        .get_current_tab()
+        .is_some_and(|tab| tab.has_pending_work())
+    {
+        Duration::from_millis(16)
+    } else if app.popup.is_some() {
         Duration::from_millis(100)
     } else {
         FOREVER

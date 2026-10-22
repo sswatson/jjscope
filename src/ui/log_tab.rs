@@ -24,6 +24,7 @@ use crate::commander::files::ConflictSide;
 use crate::commander::ids::CommitId;
 use crate::commander::log::Head;
 use crate::commander::new_commander;
+use crate::commander::submodules::DirtySubmodule;
 use crate::env::DiffFormat;
 use crate::env::JjConfig;
 use crate::env::get_env;
@@ -32,6 +33,7 @@ use crate::keybinds::LogTabKeybinds;
 use crate::ui::AppAction;
 use crate::ui::Component;
 use crate::ui::ComponentInputResult;
+use crate::ui::background::BackgroundRead;
 use crate::ui::commit_show_cache::CommitShowCache;
 use crate::ui::commit_show_cache::CommitShowKey;
 use crate::ui::commit_show_cache::CommitShowValue;
@@ -45,6 +47,7 @@ use crate::ui::highlight::WIDEN_KEY_LABEL;
 use crate::ui::panel::DetailsPanel;
 use crate::ui::panel::LargeStringContent;
 use crate::ui::panel::LogPanel;
+use crate::ui::panel::TextContent;
 use crate::ui::utils::PaneDivider;
 use crate::ui::utils::centered_rect_line_height;
 use crate::ui::utils::summarize_names;
@@ -338,6 +341,11 @@ pub struct LogTab<'a> {
 
     /// Cached change content
     commit_show_cache: CommitShowCache,
+    details_read: BackgroundRead<(CommitShowKey, u64), CommitShowValue>,
+    cache_generation: u64,
+    submodule_read: BackgroundRead<u64, Vec<DirtySubmodule>>,
+    submodule_generation: u64,
+    submodule_pending: bool,
 
     /// The currently selected change. It is a copy of `self.log_panel.head`,
     /// so if these differ, we need to update `self.head`
@@ -407,11 +415,7 @@ impl<'a> LogTab<'a> {
         const NO_WIDTH: usize = 0;
         let head_key = CommitShowKey::new(head.clone(), diff_format.clone(), NO_WIDTH);
 
-        let mut commit_show_cache = CommitShowCache::new();
-
-        let _new_content = commit_show_cache.get_or_insert(&head_key, || {
-            Self::compute_head_content(NO_WIDTH, &head, &diff_format)
-        });
+        let commit_show_cache = CommitShowCache::new();
 
         let (popup_tx, popup_rx) = std::sync::mpsc::channel();
         let (bookmark_set_popup_tx, bookmark_set_popup_rx) = std::sync::mpsc::channel();
@@ -439,6 +443,11 @@ impl<'a> LogTab<'a> {
             head_key,
 
             commit_show_cache,
+            details_read: BackgroundRead::new(),
+            cache_generation: 0,
+            submodule_read: BackgroundRead::new(),
+            submodule_generation: 0,
+            submodule_pending: false,
 
             diff_format,
 
@@ -490,25 +499,47 @@ impl<'a> LogTab<'a> {
     /// Re-check whether any submodule's checked-out commit has drifted from
     /// what `@` records, and show it in the panel title.
     ///
-    /// Deliberately not called from [Self::refresh_log_output], which runs on
-    /// every cursor move: this shells out to git once per submodule and the
-    /// answer depends only on `@` and the working copy, neither of which
-    /// scrolling changes. Refreshes, tab focus, and startup cover it.
-    ///
-    /// Costs nothing in a repo without submodules — [Commander::has_submodules]
-    /// is a single filesystem check.
+    /// Queue a background check on startup, tab focus, and refresh. Scrolling
+    /// does not change the working copy, so it does not need another check.
     fn refresh_dirty_submodules(&mut self) {
-        let commander = new_commander();
-        if !commander.has_submodules() {
-            self.log_panel.dirty_submodules.clear();
-            return;
+        self.submodule_generation += 1;
+        self.submodule_pending = true;
+    }
+
+    fn update_background_reads(&mut self) {
+        self.refresh_head_output();
+        let wanted = (self.head_key.clone(), self.cache_generation);
+        if let Some(content) = self.details_read.poll(&wanted) {
+            self.commit_show_cache.insert_document(content);
         }
-        // A failure here means git could not answer, which is not worth a popup
-        // on a background check: fall back to reporting nothing dirty.
-        self.log_panel.dirty_submodules = commander
-            .get_current_head()
-            .and_then(|head| commander.get_dirty_submodules(&head.commit_id))
-            .unwrap_or_default();
+        // Width zero precedes the first draw. Wait for the actual panel width
+        // rather than generating the same expensive diff twice on startup.
+        if self.head_panel.columns() > 0 && !self.commit_show_cache.has_exact_match(&self.head_key)
+        {
+            let width = self.head_panel.columns() as usize;
+            let head = self.head.clone();
+            let format = self.diff_format.clone();
+            self.details_read.start(wanted, move || {
+                Self::compute_head_content(width, &head, &format)
+            });
+        }
+
+        if let Some(dirty) = self.submodule_read.poll(&self.submodule_generation) {
+            self.log_panel.dirty_submodules = dirty;
+            self.submodule_pending = false;
+        }
+        if self.submodule_pending {
+            self.submodule_read.start(self.submodule_generation, || {
+                let commander = new_commander();
+                if !commander.has_submodules() {
+                    return Vec::new();
+                }
+                commander
+                    .get_current_head()
+                    .and_then(|head| commander.get_dirty_submodules(&head.commit_id))
+                    .unwrap_or_default()
+            });
+        }
     }
 
     /// Extract selection from log panel and update change details panel
@@ -519,17 +550,10 @@ impl<'a> LogTab<'a> {
 
     /// Refesh the diff of the currently selected change
     fn refresh_head_output(&mut self) {
-        // If the key matches, then we can use the cached value.
-        // This is not entierly true. A reconfiguration of jj could
-        // generate different output for some keys. We probably need
-        // a forced cache clear function.
-
-        // TODO use shared function to build key, so width can be cleared if not needed
+        // Selecting a revision only changes the desired key; update() starts
+        // the read after queued navigation events have been processed.
         let inner_width = self.head_panel.columns() as usize;
         let key = CommitShowKey::new(self.head.clone(), self.diff_format.clone(), inner_width);
-        let _new_content = self.commit_show_cache.get_or_insert(&key, || {
-            Self::compute_head_content(inner_width, &self.head, &self.diff_format)
-        });
 
         let content_changed = self.head_key != key;
 
@@ -547,6 +571,7 @@ impl<'a> LogTab<'a> {
     /// Mark all active elements as dirty, which will trigger a cache
     /// update next time they are requested.
     fn mark_cache_as_dirty(&mut self) {
+        self.cache_generation += 1;
         self.commit_show_cache.mark_dirty();
     }
 
@@ -2222,7 +2247,14 @@ impl Component for LogTab<'_> {
         Ok(())
     }
 
+    fn has_pending_work(&self) -> bool {
+        self.details_read.is_running()
+            || self.submodule_pending
+            || !self.commit_show_cache.has_exact_match(&self.head_key)
+    }
+
     fn update(&mut self) -> Result<Option<AppAction>> {
+        self.update_background_reads();
         // Check for popup action
         if let Ok(res) = self.popup_rx.try_recv()
             && res.1.unwrap_or(false)
@@ -2287,7 +2319,16 @@ impl Component for LogTab<'_> {
                 .render_context::<LargeStringContent>(content.value())
                 .title(format!(" Details for {} ", self.head.change_id))
                 .draw(f, chunks[1])
+        } else {
+            self.head_panel
+                .render_context::<TextContent>("Loading details…")
+                .title(format!(" Details for {} ", self.head.change_id))
+                .draw(f, chunks[1]);
         }
+
+        // Rendering establishes the inner width, including on resize. Queue
+        // another update if a width-sensitive format needs fresh output.
+        self.refresh_head_output();
 
         // Draw popup
         if self.popup.is_opened() {
